@@ -10,7 +10,30 @@ This is an [Expo](https://expo.dev) project created with [`create-expo-app`](htt
    npm install
    ```
 
-2. Start the app
+2. Set up Supabase environment variables
+
+   Create a `.env` file in the root directory with your Supabase credentials:
+
+   ```env
+   EXPO_PUBLIC_SUPABASE_URL=your_supabase_project_url
+   EXPO_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key
+   ```
+
+   You can find these values in your Supabase project settings:
+   - Go to https://app.supabase.com
+   - Select your project
+   - Navigate to Settings → API
+   - Copy the Project URL and anon/public key
+
+3. Configure OAuth providers in Supabase
+
+   - Go to Authentication → Providers in your Supabase dashboard
+   - Enable Google and Apple providers
+   - Configure the redirect URLs:
+     - For development: `myapp://` (matches the scheme in app.json)
+     - For production: Add your production URL scheme
+
+4. Start the app
 
    ```bash
    npx expo start

@@ -1,0 +1,14 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: #050505;
+  --foreground: #f9f9f9;
+  --card: #dcdcdc;
+  --cardborder: #d5d5d5;
+  --primary: #0052c8;
+  --secondary: #1f1f1f;
+  --input: #e5e7eb;
+  --input-placeholder: #4b5563;
+}
