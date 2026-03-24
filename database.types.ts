@@ -14,10 +14,47 @@ export type Database = {
   }
   public: {
     Tables: {
+      blocked_users: {
+        Row: {
+          blocked_user_id: string
+          blocker_id: string
+          created_at: string
+          id: number
+        }
+        Insert: {
+          blocked_user_id: string
+          blocker_id: string
+          created_at?: string
+          id?: number
+        }
+        Update: {
+          blocked_user_id?: string
+          blocker_id?: string
+          created_at?: string
+          id?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "blocked_users_blocked_user_id_fkey"
+            columns: ["blocked_user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "blocked_users_blocker_id_fkey"
+            columns: ["blocker_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       posts: {
         Row: {
           caption: string | null
           created_at: string
+          flagged: boolean
           id: number
           image: string
           user_id: string
@@ -25,6 +62,7 @@ export type Database = {
         Insert: {
           caption?: string | null
           created_at?: string
+          flagged?: boolean
           id?: number
           image: string
           user_id: string
@@ -32,6 +70,7 @@ export type Database = {
         Update: {
           caption?: string | null
           created_at?: string
+          flagged?: boolean
           id?: number
           image?: string
           user_id?: string
@@ -49,6 +88,7 @@ export type Database = {
       profiles: {
         Row: {
           avatar_url: string | null
+          eula_accepted_at: string | null
           expo_token: string | null
           full_name: string | null
           hype: number
@@ -59,6 +99,7 @@ export type Database = {
         }
         Insert: {
           avatar_url?: string | null
+          eula_accepted_at?: string | null
           expo_token?: string | null
           full_name?: string | null
           hype?: number
@@ -69,6 +110,7 @@ export type Database = {
         }
         Update: {
           avatar_url?: string | null
+          eula_accepted_at?: string | null
           expo_token?: string | null
           full_name?: string | null
           hype?: number

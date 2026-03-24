@@ -3,7 +3,7 @@ import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 
 // Feature flag: Set to false to disable daily post limit (allow unlimited posts)
-const ENABLE_DAILY_POST_LIMIT = false;
+const ENABLE_DAILY_POST_LIMIT = true;
 
 const LAST_POST_DATE_KEY = "@last_post_date";
 
@@ -20,6 +20,9 @@ interface PostStore {
   lastPostDate: string | null;
   canPostToday: () => boolean;
   recordPost: () => Promise<void>;
+  postCount:number;
+  hasShownFirstReview:boolean;
+  isShowingFirstReview:()=>void;
   checkIfCanPost: () => Promise<boolean>;
 }
 
@@ -27,7 +30,8 @@ export const usePostStore = create<PostStore>()(
   persist(
     (set, get) => ({
       lastPostDate: null,
-
+      postCount:0,
+      hasShownFirstReview:false,
       canPostToday: () => {
         const { lastPostDate } = get();
         const today = getTodayDateString();
@@ -37,14 +41,18 @@ export const usePostStore = create<PostStore>()(
       recordPost: async () => {
         const today = getTodayDateString();
         set({ lastPostDate: today });
+        set({postCount:get().postCount + 1});
         // Also save to AsyncStorage for persistence
+
         try {
           await AsyncStorage.setItem(LAST_POST_DATE_KEY, today);
         } catch (error) {
           console.error("Error saving last post date:", error);
         }
       },
-
+      isShowingFirstReview:()=>{
+        set({hasShownFirstReview:true})
+      },
       checkIfCanPost: async () => {
         // If daily post limit is disabled, always allow posting
         if (!ENABLE_DAILY_POST_LIMIT) {

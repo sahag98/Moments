@@ -23,11 +23,11 @@ export function DailyHypeLimitModal({
               <Text className="text-white text-4xl font-semibold">📸</Text>
             </View>
             <Text className="text-white text-2xl font-bold text-center mb-2">
-              Moment Appreciated
+              Moment Boosted
             </Text>
             <Text className="text-[#e0e0e0] text-base text-center leading-6 text-wrap">
-              You've already appreciated a moment today. Come back tomorrow to
-              appreciate more moments!
+              You've already boosted a moment today. Come back tomorrow to boost
+              more!
             </Text>
           </View>
 

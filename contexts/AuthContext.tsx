@@ -1,12 +1,21 @@
 import { Tables } from "@/database.types";
 import { supabase } from "@/lib/supabase";
+import { syncExpoTokenIfNeeded } from "@/lib/registerNotifications";
+import { useUserStore } from "@/store/userStore";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { AuthError, Session, User } from "@supabase/supabase-js";
 import * as AppleAuthentication from "expo-apple-authentication";
 import * as Linking from "expo-linking";
 import { router } from "expo-router";
 import * as WebBrowser from "expo-web-browser";
-import React, { createContext, useContext, useEffect, useState } from "react";
+import React, {
+  createContext,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+import { AppState, AppStateStatus } from "react-native";
 // Complete OAuth session in browser
 WebBrowser.maybeCompleteAuthSession();
 
@@ -25,7 +34,7 @@ interface AuthContextType {
   signOut: () => Promise<void>;
   deleteAccount: () => Promise<void>;
   error: AuthError | null;
-  refreshProfile: () => Promise<void>;
+  refreshProfile: (options?: { replaceToTabs?: boolean }) => Promise<void>;
   refreshWelcomeStatus: () => Promise<void>;
   fetchAllProfiles: () => Promise<Profile[]>;
 }
@@ -40,8 +49,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [error, setError] = useState<AuthError | null>(null);
   const [welcomeChecked, setWelcomeChecked] = useState(false);
   const [needsWelcome, setNeedsWelcome] = useState(false);
+  const isManuallyFetchingRef = useRef(false);
+  const { setProfile: setProfileInStore, clearProfile: clearProfileInStore } =
+    useUserStore();
 
-  const fetchProfile = async (userId: string) => {
+  const fetchProfile = async (
+    userId: string,
+    options?: { replaceToTabs?: boolean }
+  ) => {
+    // Only redirect to tabs when explicitly requested (e.g. after login).
+    // Default to false so profile updates from profile tab don't redirect.
+    const shouldReplaceToTabs = options?.replaceToTabs === true;
+    console.log("fetching profile for user: ", userId);
     try {
       const { data, error: profileError } = await supabase
         .from("profiles")
@@ -53,23 +72,41 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // Only log actual errors (not "not found" cases)
         console.error("Error fetching profile:", profileError);
         setProfile(null);
+        clearProfileInStore();
+        return null;
       } else {
         // maybeSingle() returns null if no rows found, which is expected for new users
+        console.log(
+          "Profile fetched:",
+          data ? "found" : "not found (new user)",
+        );
         setProfile(data);
-        if (data) {
-          console.log("replacing: ", data);
-          router.push("/");
+        // Store in Zustand store
+        setProfileInStore(data);
+        // Sync Expo push token with Supabase if it changed
+        syncExpoTokenIfNeeded(userId, data?.expo_token ?? null).catch(() => {});
+        if (shouldReplaceToTabs) {
+          router.replace("/(tabs)");
         }
+        // Don't navigate here - let components handle navigation via Redirect
+        return data;
       }
     } catch (err) {
       console.error("Error fetching profile:", err);
       setProfile(null);
+      clearProfileInStore();
+      return null;
     }
   };
 
   useEffect(() => {
     let isMounted = true;
-    console.log("check");
+    let authSubscription:
+      | ReturnType<
+          typeof supabase.auth.onAuthStateChange
+        >["data"]["subscription"]
+      | null = null;
+
     // Check welcome status (just for state, no navigation)
     const checkWelcome = async () => {
       try {
@@ -89,83 +126,84 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
     };
 
-    // Initialize auth session
-    const initializeAuth = async () => {
+    // Initialize auth session (aligned with bless-tag: getSession → profile, always set ready)
+    const initializeAuth = async (isForegroundRefresh = false) => {
       try {
-        // Check welcome status first
-        await checkWelcome();
+        if (!isForegroundRefresh) {
+          // Check welcome status first (only on initial load) - kept for onboarding
+          await checkWelcome();
+        }
 
-        // Then get session
+        // Get session first (same order as bless-tag)
         const {
           data: { session },
           error,
         } = await supabase.auth.getSession();
-
-        console.log("session", session);
 
         if (!isMounted) return;
 
         if (error) {
           console.error("Error getting session:", error);
           setError(error);
-          setLoading(false);
           return;
         }
 
         setSession(session);
         setUser(session?.user ?? null);
 
-        // Fetch profile if user exists
+        // Fetch profile if user exists (like getUser in bless-tag)
         if (session?.user) {
           console.log("fetching profile");
-          await fetchProfile(session.user.id);
-          router.replace("/(tabs)");
+          await fetchProfile(session.user.id, {
+            replaceToTabs: !isForegroundRefresh,
+          });
+        } else {
+          setProfile(null);
+          clearProfileInStore();
         }
-
-        setLoading(false);
       } catch (err) {
         if (!isMounted) return;
         console.error("Error in initializeAuth:", err);
-        setLoading(false);
+      } finally {
+        // Always set loading to false so we never get stuck (initial + foreground refresh)
+        if (isMounted) {
+          setLoading(false);
+        }
       }
     };
 
     initializeAuth();
 
     // Listen for auth changes
-    const {
-      data: { subscription: authSubscription },
-    } = supabase.auth.onAuthStateChange(async (event, session) => {
-      if (!isMounted) return;
 
-      console.log("changed");
-      try {
-        setSession(session);
-        setUser(session?.user ?? null);
-
-        if (session?.user) {
-          console.log("Fetching profile for user:", session.user);
-          await fetchProfile(session.user.id);
-          console.log("Profile fetch completed");
-        } else {
-          setProfile(null);
-        }
-
-        // Always set loading to false after auth state change completes
-        // This ensures the UI updates after sign-in
+    supabase.auth.onAuthStateChange((_event, session) => {
+      const user = session?.user;
+      if (user) {
+        fetchProfile(user.id, { replaceToTabs: true });
+      } else {
         setLoading(false);
-      } catch (err) {
-        console.error("Error in onAuthStateChange handler:", err);
-        if (isMounted) {
-          setLoading(false);
-        }
       }
     });
 
+    // Handle app state changes (when app comes to foreground)
+    const handleAppStateChange = (nextAppState: AppStateStatus) => {
+      if (nextAppState === "active" && isMounted) {
+        console.log("App came to foreground, refreshing session");
+        // Refresh session when app comes to foreground
+        // Use isForegroundRefresh to avoid affecting loading state
+        initializeAuth(true);
+      }
+    };
+
+    const appStateSubscription = AppState.addEventListener(
+      "change",
+      handleAppStateChange,
+    );
+
     return () => {
       isMounted = false;
-      // subscription.remove();
-      authSubscription.unsubscribe();
+
+      appStateSubscription.remove();
     };
   }, []);
 
@@ -179,7 +217,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const { data, error: signInError } = await supabase.auth.signInWithOAuth({
         provider: "google",
         options: {
-          redirectTo: redirectUrl,
+          redirectTo: "moments://",
         },
       });
 
@@ -191,16 +229,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       // Open the OAuth URL in browser
       if (data?.url) {
+        console.log("opening auth session with url: ", data.url);
         const result = await WebBrowser.openAuthSessionAsync(
           data.url,
-          redirectUrl
+          "moments://",
+          {
+            showInRecents: true,
+          },
         );
-        console.log("OAuth result:", result);
 
         // Handle successful OAuth callback
         if (result.type === "success" && "url" in result && result.url) {
-          console.log("OAuth callback URL:", result.url);
-
           // Parse the callback URL to extract tokens or code
           // The URL contains hash fragments like: myapp://#access_token=xxx&refresh_token=yyy
           // or query params like: myapp://?code=xxx or myapp://?access_token=xxx&refresh_token=yyy
@@ -234,7 +273,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           }
 
           // If we have a code, exchange it for a session (PKCE flow)
-          // The onAuthStateChange listener will handle updating state after this
           if (code) {
             console.log("Exchanging code for session...");
             const { data: sessionData, error: sessionError } =
@@ -248,17 +286,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             }
 
             if (sessionData.session) {
-              console.log(
-                "Code exchanged successfully, session obtained. onAuthStateChange should fire."
-              );
-              // Explicitly update state immediately while waiting for onAuthStateChange
-              setSession(sessionData.session);
-              setUser(sessionData.session.user);
-              if (sessionData.session.user) {
-                await fetchProfile(sessionData.session.user.id);
-                router.replace("/(tabs)");
+              console.log("Code exchanged successfully");
+              // Manually update state and fetch profile to ensure it's available immediately
+              const newSession = sessionData.session;
+              isManuallyFetchingRef.current = true;
+              setSession(newSession);
+              setUser(newSession.user);
+              if (newSession.user) {
+                console.log("Manually fetching profile after code exchange...");
+                const fetchedProfile = await fetchProfile(newSession.user.id);
+                console.log(
+                  "Profile fetched manually:",
+                  fetchedProfile ? "found" : "null",
+                );
               }
-              // onAuthStateChange will also fire, but we've already updated state
+              isManuallyFetchingRef.current = false;
+              // Set loading to false after profile is fetched
+              // onAuthStateChange will also fire, but we've already fetched the profile
               setLoading(false);
               return;
             } else {
@@ -269,7 +313,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           }
 
           // If we have direct tokens, set the session
-          // The onAuthStateChange listener will handle updating state after this
+          // setSession will trigger onAuthStateChange, but we also manually fetch profile to ensure it's available
           if (accessToken && refreshToken) {
             console.log("Setting session with tokens...");
             const { data: sessionData, error: sessionError } =
@@ -285,19 +329,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               throw sessionError;
             }
 
-            console.log("sessionData", sessionData);
-
             if (sessionData.session) {
-              console.log(
-                "Session set successfully with tokens. onAuthStateChange should fire."
-              );
-              // Explicitly update state immediately while waiting for onAuthStateChange
-              setSession(sessionData.session);
-              setUser(sessionData.session.user);
-              if (sessionData.session.user) {
-                await fetchProfile(sessionData.session.user.id);
+              console.log("Session set successfully");
+              // Manually update state and fetch profile to ensure it's available immediately
+              const newSession = sessionData.session;
+              isManuallyFetchingRef.current = true;
+              setSession(newSession);
+              setUser(newSession.user);
+              if (newSession.user) {
+                console.log("Manually fetching profile after setSession...");
+                const fetchedProfile = await fetchProfile(newSession.user.id);
+                console.log(
+                  "Profile fetched manually:",
+                  fetchedProfile ? "found" : "null",
+                );
               }
-              // onAuthStateChange will also fire, but we've already updated state
+              isManuallyFetchingRef.current = false;
+              // Set loading to false after profile is fetched
+              // onAuthStateChange will also fire, but we've already fetched the profile
               setLoading(false);
               return;
             } else {
@@ -308,6 +357,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           }
 
           // Fallback: try to get session (Supabase might have auto-handled it)
+          // Note: getSession() doesn't trigger onAuthStateChange, so we need to manually handle it
           console.log("No tokens/code found in URL, trying getSession...");
           const { data: sessionData, error: sessionError } =
             await supabase.auth.getSession();
@@ -316,12 +366,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             setError(sessionError);
             setLoading(false);
           } else if (sessionData.session) {
-            console.log("Session found via getSession");
-            // Explicitly update state
-            setSession(sessionData.session);
-            setUser(sessionData.session.user);
-            if (sessionData.session.user) {
-              await fetchProfile(sessionData.session.user.id);
+            console.log(
+              "Session found via getSession. Manually updating state and fetching profile since getSession doesn't trigger onAuthStateChange.",
+            );
+            const newSession = sessionData.session;
+            setSession(newSession);
+            setUser(newSession.user);
+            if (newSession.user) {
+              // Manually fetch profile since getSession doesn't trigger onAuthStateChange
+              await fetchProfile(newSession.user.id);
             }
             setLoading(false);
           } else {
@@ -376,8 +429,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         console.log(JSON.stringify({ error, user }, null, 2));
         if (!error) {
           console.log("Signed in!");
-
-          router.replace("/");
+          // Don't navigate here - let components handle navigation via Redirect
+          // onAuthStateChange will fire and update the state
         }
       } else {
         throw new Error("No identityToken.");
@@ -393,9 +446,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const refreshProfile = async () => {
+  const refreshProfile = async (options?: { replaceToTabs?: boolean }) => {
     if (user?.id) {
-      await fetchProfile(user.id);
+      await fetchProfile(user.id, options);
     }
   };
 
@@ -429,18 +482,39 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const signOut = async () => {
     try {
       setError(null);
+
+      // Try to sign out from Supabase
+      // If there's no session, this will error, but we still want to clear local state
       const { error: signOutError } = await supabase.auth.signOut();
-      if (signOutError) {
-        setError(signOutError);
-        throw signOutError;
+
+      // If error is "Auth session missing!", it means there's already no session
+      // This is fine - we just need to clear local state
+      if (
+        signOutError &&
+        !signOutError.message?.includes("Auth session missing")
+      ) {
+        console.warn("Sign out error (non-critical):", signOutError.message);
+        // Don't throw - we still want to clear local state and redirect
       }
+
+      // Always clear local state and redirect, regardless of signOut result
+      // The onAuthStateChange handler will also clear state when it detects session is null
+      setSession(null);
+      setUser(null);
       setProfile(null);
+      clearProfileInStore();
+
+      // Navigate to auth screen
       router.replace("/auth");
     } catch (err) {
-      if (err instanceof Error) {
-        console.error("Sign out error:", err.message);
-      }
-      throw err;
+      // Even if something unexpected happens, still clear local state
+      console.error("Unexpected sign out error:", err);
+      setSession(null);
+      setUser(null);
+      setProfile(null);
+      clearProfileInStore();
+      router.replace("/auth");
+      // Don't re-throw - we've handled the cleanup
     }
   };
 
@@ -479,6 +553,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
 
       setProfile(null);
+      clearProfileInStore();
       router.replace("/auth");
     } catch (err) {
       if (err instanceof Error) {

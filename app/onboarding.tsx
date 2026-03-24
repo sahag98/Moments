@@ -1,9 +1,13 @@
 import { Container } from "@/components/Container";
+import { ImageEditorModal } from "@/components/ImageEditorModal";
 import { useAuth } from "@/contexts/AuthContext";
 import { registerForPushNotificationsAsync } from "@/lib/registerNotifications";
 import { supabase } from "@/lib/supabase";
+import { getStorageUrl } from "@/lib/utils";
 import EvilIcons from "@expo/vector-icons/EvilIcons";
+import Ionicons from "@expo/vector-icons/Ionicons";
 import * as FileSystem from "expo-file-system/legacy";
+import * as Haptics from "expo-haptics";
 import * as ImagePicker from "expo-image-picker";
 import { router } from "expo-router";
 import { useEffect, useState } from "react";
@@ -19,13 +23,18 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 export default function OnboardingScreen() {
   const { user, profile, signOut, refreshProfile } = useAuth();
+  const insets = useSafeAreaInsets();
+  const avatarUrl = getStorageUrl(profile?.avatar_url, "avatars");
   const [fullName, setFullName] = useState("");
   const [profileImageUri, setProfileImageUri] = useState<string | null>(null);
+  const [showImageEditor, setShowImageEditor] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [usernameError, setUsernameError] = useState<string | null>(null);
+  const [agreedToEula, setAgreedToEula] = useState(false);
 
   // Pre-fill form if profile exists but just missing username
   useEffect(() => {
@@ -53,7 +62,7 @@ export default function OnboardingScreen() {
       if (status !== "granted") {
         Alert.alert(
           "Permission needed",
-          "Please grant permission to access your photos"
+          "Please grant permission to access your photos",
         );
         return;
       }
@@ -61,13 +70,13 @@ export default function OnboardingScreen() {
       // Launch image picker
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        allowsEditing: true,
-        aspect: [1, 1],
-        quality: 0.8,
+        allowsEditing: false,
+        quality: 0.9,
       });
 
       if (!result.canceled && result.assets[0]) {
         setProfileImageUri(result.assets[0].uri);
+        setShowImageEditor(true);
       }
     } catch (error) {
       console.error("Error picking image:", error);
@@ -75,11 +84,23 @@ export default function OnboardingScreen() {
     }
   };
 
-  const uploadImage = async (uri: string): Promise<string | null> => {
+  const handleImageEditorCancel = () => {
+    setShowImageEditor(false);
+    setProfileImageUri(null);
+  };
+
+  const handleImageEditorConfirm = async (editedUri: string) => {
+    setShowImageEditor(false);
+    await uploadImage(editedUri);
+  };
+
+  const uploadImage = async (uri: string): Promise<void> => {
     try {
       if (!user?.id) {
         throw new Error("User not found");
       }
+
+      setUploading(true);
 
       // Get file extension
       const fileExtension = uri.split(".").pop() || "jpg";
@@ -98,10 +119,10 @@ export default function OnboardingScreen() {
         bytes[i] = binaryString.charCodeAt(i);
       }
 
-      // Convert Uint8Array to ArrayBuffer (required by Supabase storage)
+      // Convert Uint8Array to ArrayBuffer
       const arrayBuffer = bytes.buffer.slice(
         bytes.byteOffset,
-        bytes.byteOffset + bytes.byteLength
+        bytes.byteOffset + bytes.byteLength,
       );
 
       // Upload to Supabase storage
@@ -122,16 +143,48 @@ export default function OnboardingScreen() {
         data: { publicUrl },
       } = supabase.storage.from("avatars").getPublicUrl(filePath);
 
-      return publicUrl;
+      // Update profile with new avatar URL
+      const { error: updateError } = await supabase
+        .from("profiles")
+        .update({
+          avatar_url: publicUrl,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", user.id);
+
+      if (updateError) {
+        console.error("Update error:", updateError);
+        throw updateError;
+      }
+
+      // Refresh profile in context (don't redirect - user is on onboarding)
+      await refreshProfile({ replaceToTabs: false });
+      setProfileImageUri(null);
+      Alert.alert("Success", "Profile picture updated!");
     } catch (error) {
       console.error("Error uploading image:", error);
-      return null;
+      Alert.alert(
+        "Error",
+        error instanceof Error
+          ? error.message
+          : "Failed to update profile picture",
+      );
+    } finally {
+      setUploading(false);
     }
   };
 
   const handleComplete = async () => {
     if (!fullName.trim()) {
       Alert.alert("Error", "Please enter your full name");
+      return;
+    }
+
+    if (!agreedToEula) {
+      Alert.alert(
+        "Agreement required",
+        "Please agree to the Terms of Use and Community Guidelines to continue.",
+      );
       return;
     }
 
@@ -156,17 +209,8 @@ export default function OnboardingScreen() {
     try {
       setUploading(true);
 
-      let avatarUrl: string | null = null;
-
-      // Upload image if selected
-      if (profileImageUri) {
-        avatarUrl = await uploadImage(profileImageUri);
-        if (!avatarUrl) {
-          Alert.alert("Error", "Failed to upload profile picture");
-          setUploading(false);
-          return;
-        }
-      }
+      // Avatar was already uploaded in pickImage/uploadImage and saved to profile
+      const avatarUrl = profile?.avatar_url ?? null;
 
       // Update or insert profile
       const { error: updateError } = await supabase.from("profiles").upsert({
@@ -174,6 +218,7 @@ export default function OnboardingScreen() {
         full_name: fullName.trim(),
         username,
         avatar_url: avatarUrl,
+        eula_accepted_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       });
 
@@ -201,13 +246,21 @@ export default function OnboardingScreen() {
   return (
     <Container>
       <KeyboardAvoidingView
-        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        behavior="padding"
         className="flex-1"
-        keyboardVerticalOffset={Platform.OS === "ios" ? 0 : 20}
+        keyboardVerticalOffset={Platform.OS === "ios" ? 0 : insets.top}
+        style={{ flex: 1 }}
       >
         <ScrollView
-          contentContainerClassName="flex-grow items-center justify-center"
+          contentContainerStyle={{
+            flexGrow: 1,
+            justifyContent: "center",
+            alignItems: "center",
+            paddingBottom: Platform.OS === "android" ? 100 : 40,
+          }}
           keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
+          showsVerticalScrollIndicator={false}
         >
           <View className="w-full max-w-md gap-4">
             <Text className="text-white text-3xl font-bold mb-2 text-center">
@@ -226,6 +279,18 @@ export default function OnboardingScreen() {
                     className="w-full h-full"
                     resizeMode="cover"
                   />
+                ) : profile?.avatar_url ? (
+                  <Image
+                    source={{ uri: profile.avatar_url }}
+                    className="w-full h-full"
+                    resizeMode="cover"
+                  />
+                ) : avatarUrl ? (
+                  <Image
+                    source={{ uri: avatarUrl }}
+                    className="w-full h-full"
+                    resizeMode="cover"
+                  />
                 ) : (
                   <View className="items-center gap-2">
                     {/* <Text className="text-white text-4xl mb-2">📷</Text> */}
@@ -237,6 +302,9 @@ export default function OnboardingScreen() {
                   </View>
                 )}
               </TouchableOpacity>
+              {uploading && (
+                <Text className="text-gray-400 text-sm mt-2">Uploading...</Text>
+              )}
             </View>
 
             {/* Full Name Input */}
@@ -267,12 +335,36 @@ export default function OnboardingScreen() {
               )}
             </View>
 
+            {/* EULA / Terms agreement */}
+            <TouchableOpacity
+              onPress={() => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                setAgreedToEula((prev) => !prev);
+              }}
+              activeOpacity={0.7}
+              className="flex-row items-center gap-3 mb-2"
+            >
+              <View className="pt-0.5">
+                <Ionicons
+                  name={agreedToEula ? "checkmark-circle" : "ellipse-outline"}
+                  size={24}
+                  color={agreedToEula ? "#3e64df" : "#8a8a8a"}
+                />
+              </View>
+              <Text className="text-gray-300 text-sm flex-1">
+                I agree to the Terms of Use and Community Guidelines. We have
+                zero tolerance for objectionable content or abusive behavior.
+              </Text>
+            </TouchableOpacity>
+
             {/* Complete Button */}
             <TouchableOpacity
               onPress={handleComplete}
-              disabled={uploading || !fullName.trim()}
+              disabled={uploading || !fullName.trim() || !agreedToEula}
               className={`bg-primary py-4 rounded-lg items-center ${
-                uploading || !fullName.trim() ? "opacity-50" : ""
+                uploading || !fullName.trim() || !agreedToEula
+                  ? "opacity-50"
+                  : ""
               }`}
             >
               {uploading ? (
@@ -286,6 +378,13 @@ export default function OnboardingScreen() {
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
+
+      <ImageEditorModal
+        visible={showImageEditor}
+        imageUri={profileImageUri}
+        onCancel={handleImageEditorCancel}
+        onConfirm={handleImageEditorConfirm}
+      />
     </Container>
   );
 }

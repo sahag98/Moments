@@ -2,6 +2,8 @@ import Constants from 'expo-constants';
 import * as Device from 'expo-device';
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
+import { supabase } from '@/lib/supabase';
+
 export async function registerForPushNotificationsAsync() {
   let token;
 
@@ -21,10 +23,10 @@ export async function registerForPushNotificationsAsync() {
       const { status } = await Notifications.requestPermissionsAsync();
       finalStatus = status;
     }
-    if (finalStatus !== 'granted') {
-      alert('Failed to get push token for push notification!');
-      return;
-    }
+    // if (finalStatus !== 'granted') {
+    //   alert('Failed to get push token for push notification!');
+    //   return;
+    // }
     // Learn more about projectId:
     // https://docs.expo.dev/push-notifications/push-notifications-setup/#configure-projectid
     // EAS projectId is used here.
@@ -48,4 +50,26 @@ export async function registerForPushNotificationsAsync() {
   }
 
   return token;
+}
+
+/**
+ * Compares the current Expo push token with the user's stored expo_token in Supabase.
+ * If they differ (or stored is null), updates the profile. Otherwise does nothing.
+ */
+export async function syncExpoTokenIfNeeded(
+  userId: string,
+  storedToken: string | null | undefined
+): Promise<void> {
+  const deviceToken = await registerForPushNotificationsAsync();
+  if (!deviceToken) return;
+  if (deviceToken === (storedToken ?? null)) return;
+
+  const { error } = await supabase
+    .from('profiles')
+    .update({ expo_token: deviceToken })
+    .eq('id', userId);
+
+  if (error) {
+    console.error('Failed to update expo_token:', error);
+  }
 }

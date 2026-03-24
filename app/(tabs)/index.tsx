@@ -1,19 +1,29 @@
 import { Container } from "@/components/Container";
 import { DailyHypeLimitModal } from "@/components/DailyHypeLimitModal";
 import { HelloWave } from "@/components/hello-wave";
+import { SneakPeekUpdateCard } from "@/components/SneakPeekUpdateCard";
+import { UpdateModal } from "@/components/update-modal";
 import { useAuth } from "@/contexts/AuthContext";
 import { Tables } from "@/database.types";
 import { BIBLE_VERSES } from "@/lib/bible-verses";
 import { supabase } from "@/lib/supabase";
 import { cn } from "@/lib/utils";
 import { useHypeStore } from "@/store/hypeStore";
+import Ionicons from "@expo/vector-icons/Ionicons";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { useIsFocused } from "@react-navigation/native";
+import * as Haptics from "expo-haptics";
 import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
+import { router, useNavigation } from "expo-router";
 import LottieView from "lottie-react-native";
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   Dimensions,
+  Linking,
+  Modal,
   Platform,
   RefreshControl,
   Text,
@@ -25,7 +35,6 @@ import Animated, {
   useAnimatedStyle,
   useSharedValue,
 } from "react-native-reanimated";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 type Post = Tables<"posts"> & {
   profiles: Tables<"profiles"> | null;
@@ -47,9 +56,14 @@ type FeedItem = Post | BibleVerse | EndOfFeed;
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get("window");
 
+let verseIdSeq = 0;
+
+const HAS_VIEWED_FULL_SCREEN_KEY = "@has_viewed_full_screen_post";
+const FEEDBACK_BANNER_DISMISSED_KEY = "@feedback_banner_dismissed_v1";
+
 // Post limit configuration - change this for testing vs production
 // Set to 3 for easy testing, 20 for production
-const POST_LIMIT = __DEV__ ? 3 : 20; // Automatically uses 3 in dev, 20 in production
+const POST_LIMIT = __DEV__ ? 20 : 20; // Automatically uses 3 in dev, 20 in production
 
 // Animated Verse Component
 const AnimatedVerseItem = ({
@@ -99,9 +113,6 @@ const AnimatedVerseItem = ({
         className="w-full justify-center items-center p-8"
         style={{ aspectRatio: 1080 / 1350, minHeight: 400 }}
       >
-        <Text className="text-white text-lg font-semibold mb-6 text-center">
-          Take a moment and read this bible verse
-        </Text>
         <View className="flex-1 justify-center items-center px-4">
           <Text className="text-white text-xl text-center leading-8 mb-6">
             "{item.text}"
@@ -162,12 +173,9 @@ const AnimatedEndOfFeedItem = ({
         style={{ aspectRatio: 1080 / 1350, minHeight: 400 }}
       >
         <Text className="text-white text-2xl font-bold mb-6 text-center">
-          That's all for today
+          That's all for now
         </Text>
         <View className="flex-1 justify-center items-center px-6">
-          <Text className="text-white text-xl text-balance text-center leading-8 mb-4">
-            You've seen all the moments from today.
-          </Text>
           <Text className="text-gray-300 text-lg text-center leading-7 mb-6">
             Take this time to be intentional. Step away from your phone and
             spend meaningful moments with those around you.
@@ -190,6 +198,9 @@ const AnimatedPostItem = ({
   optimisticHypeUpdates,
   onOptimisticHypeUpdate,
   onDailyLimitReached,
+  showFullScreenHint,
+  onViewFullScreen,
+  onRequestFlagPost,
 }: {
   item: Post;
   scrollY: { value: number };
@@ -199,11 +210,14 @@ const AnimatedPostItem = ({
   onOptimisticHypeUpdate: (
     postId: number,
     profileId: string,
-    increment: number
+    increment: number,
   ) => void;
   onDailyLimitReached: () => void;
+  showFullScreenHint?: boolean;
+  onViewFullScreen?: () => void;
+  onRequestFlagPost: (post: Post) => void;
 }) => {
-  const { user, refreshProfile } = useAuth();
+  const { user, refreshProfile, profile: currentUser } = useAuth();
   const hypedPosts = useHypeStore((state) => state.hypedPosts);
   const { addHypedPost, hasUsedDailyHype, incrementDailyHype } = useHypeStore();
   const profile = item.profiles;
@@ -250,29 +264,41 @@ const AnimatedPostItem = ({
       <View className="absolute bottom-0 gap-3 left-0 z-10 flex-row items-end justify-between w-full p-3">
         <View className="flex-row items-center gap-3">
           {profile?.avatar_url ? (
-            <Image
-              source={{
-                uri: profile?.avatar_url,
-              }}
-              style={{
-                width: 40,
-                height: 40,
-                borderWidth: 1,
-                borderColor: "#989898",
-                borderRadius: 20,
-              }}
-              contentFit="cover"
-              transition={200}
-            />
+            <TouchableOpacity
+              onPress={() =>
+                router.push({
+                  pathname: "/post-image",
+                  params: { image: profile.avatar_url },
+                })
+              }
+              activeOpacity={0.9}
+            >
+              <Image
+                source={{
+                  uri: profile?.avatar_url,
+                }}
+                style={{
+                  width: 60,
+                  height: 60,
+                  borderWidth: 1,
+                  borderColor: "#989898",
+                  borderRadius: 20,
+                }}
+                contentFit="cover"
+                transition={200}
+              />
+            </TouchableOpacity>
           ) : (
-            <View className="w-14 h-14 rounded-full bg-white/15 items-center justify-center mr-3">
+            <View className="w-16 h-16 rounded-full bg-white/15 items-center justify-center mr-3">
               <Text className="text-white text-xl font-bold">
                 {displayName.charAt(0).toUpperCase()}
               </Text>
             </View>
           )}
           <View className="">
-            <Text className="text-white font-semibold ">{displayName}</Text>
+            <Text className="text-white text-lg font-semibold ">
+              {displayName}
+            </Text>
           </View>
         </View>
 
@@ -282,7 +308,6 @@ const AnimatedPostItem = ({
           <TouchableOpacity
             onPress={async () => {
               if (isHyped) return; // Already hyped, do nothing
-
               // Check if user has used their daily hype
               if (hasUsedDailyHype()) {
                 onDailyLimitReached();
@@ -291,17 +316,11 @@ const AnimatedPostItem = ({
 
               if (!user?.id) return;
 
-              // Mark as hyped locally
-              addHypedPost(item.id);
-
-              // Optimistically update the hype count immediately
+              // Optimistically update the hype count immediately (UI only)
               onOptimisticHypeUpdate(item.id, postOwnerId, 1);
 
               // Show firework animation
               setShowFirework(true);
-
-              // Increment daily hype count
-              incrementDailyHype();
 
               // Increment hype count for the post owner using Edge Function
               try {
@@ -313,7 +332,7 @@ const AnimatedPostItem = ({
                       userId: user.id,
                       postId: item.id,
                     }),
-                  }
+                  },
                 );
 
                 if (error) {
@@ -341,6 +360,10 @@ const AnimatedPostItem = ({
                   return;
                 }
 
+                // Server accepted: persist boost locally so we can't boost this post again
+                addHypedPost(item.id);
+                incrementDailyHype();
+
                 // Remove optimistic update since server confirmed it
                 // The realtime subscription will update it with the actual value
                 onOptimisticHypeUpdate(item.id, postOwnerId, 0);
@@ -348,6 +371,41 @@ const AnimatedPostItem = ({
                 // Refresh profile if it's the current user's own post (unlikely but possible)
                 if (user.id === postOwnerId) {
                   await refreshProfile();
+                }
+
+                // Send push notification to post owner only on success
+                if (item.profiles?.expo_token) {
+                  const message = {
+                    to: item.profiles?.expo_token,
+                    sound: "default",
+                    title: "Moments",
+                    body: `${currentUser?.username} boosted your moment! 📸`,
+                    data: {
+                      route: "/",
+                    },
+                  };
+                  try {
+                    const response = await fetch(
+                      "https://exp.host/--/api/v2/push/send",
+                      {
+                        method: "POST",
+                        headers: {
+                          Accept: "application/json",
+                          "Accept-encoding": "gzip, deflate",
+                          "Content-Type": "application/json",
+                        },
+                        body: JSON.stringify(message),
+                      },
+                    );
+                    if (!response.ok) {
+                      console.error(
+                        `Failed to send notification`,
+                        response.statusText,
+                      );
+                    }
+                  } catch (notifError) {
+                    console.error(`Error sending notification`, notifError);
+                  }
                 }
               } catch (error: any) {
                 console.error("Error hyping post:", error);
@@ -362,52 +420,16 @@ const AnimatedPostItem = ({
 
                 // Rollback optimistic update on error
                 onOptimisticHypeUpdate(item.id, postOwnerId, -1);
-              } finally {
-                if (item.profiles?.expo_token) {
-                  const message = {
-                    to: item.profiles?.expo_token,
-                    sound: "default",
-                    title: "Moments",
-                    body: `${profile?.username} appreciated your moment!`,
-                    data: {
-                      route: "/",
-                    },
-                  };
-
-                  try {
-                    const response = await fetch(
-                      "https://exp.host/--/api/v2/push/send",
-                      {
-                        method: "POST",
-                        headers: {
-                          Accept: "application/json",
-                          "Accept-encoding": "gzip, deflate",
-                          "Content-Type": "application/json",
-                        },
-                        body: JSON.stringify(message),
-                      }
-                    );
-
-                    if (!response.ok) {
-                      console.error(
-                        `Failed to send notification`,
-                        response.statusText
-                      );
-                    }
-                  } catch (error) {
-                    console.error(`Error sending notification`, error);
-                  }
-                }
               }
             }}
             disabled={isHyped || postOwnerId === user?.id}
             className={
               isHyped
                 ? cn(
-                    "bg-blue-500/15 border-2 disabled:opacity-50 border-blue-500 px-3 py-2 rounded-xl items-center justify-center gap-1"
+                    "bg-blue-500/15 border-2 disabled:opacity-50 border-blue-500 px-3 py-1 rounded-3xl items-center justify-center gap-1",
                   )
                 : cn(
-                    "bg-white/15 px-3 py-2 border-2 disabled:opacity-50 border-[#474747] rounded-xl items-center justify-center gap-1"
+                    "bg-white/15 px-3 py-1 border-2 disabled:opacity-50 border-[#474747] rounded-3xl items-center justify-center gap-1",
                   )
             }
             activeOpacity={0.7}
@@ -418,7 +440,7 @@ const AnimatedPostItem = ({
               color={isHyped ? "#FFD700" : "#fff"}
             /> */}
             <Text className="text-white text-xl font-bold">{displayHype}</Text>
-            <Text className="text-white text-3xl font-semibold">📸</Text>
+            <Text className="text-white text-4xl font-semibold">📸</Text>
           </TouchableOpacity>
 
           {/* Firework Animation */}
@@ -450,7 +472,24 @@ const AnimatedPostItem = ({
 
       {/* Post Image */}
       {item.image ? (
-        <View style={{ position: "relative" }}>
+        <TouchableOpacity
+          style={{ position: "relative" }}
+          activeOpacity={1}
+          onPress={() => {
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            onViewFullScreen?.();
+            router.push({
+              pathname: "/post-image",
+              params: { image: item.image },
+            });
+          }}
+          onLongPress={() => {
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+            if (!user?.id || user.id === postOwnerId) return;
+            onRequestFlagPost(item);
+          }}
+          delayLongPress={600}
+        >
           <Image
             source={{
               uri: item.image,
@@ -462,9 +501,40 @@ const AnimatedPostItem = ({
             placeholder={{ blurhash: "L47BAmj[%Mj[j[fQfQfQ~qj[ayj[" }}
             onError={(error) => {
               console.error("Error loading post image:", error);
-              console.log("Image URL:", item.image);
             }}
           />
+          {/* Full screen hint badge - only on first post until first view */}
+          {showFullScreenHint && (
+            <View
+              style={{
+                position: "absolute",
+                top: 12,
+                left: 16,
+                right: 16,
+                alignItems: "center",
+                zIndex: 10,
+              }}
+            >
+              <View
+                style={{
+                  backgroundColor: "rgba(0,0,0,0.65)",
+                  paddingHorizontal: 14,
+                  paddingVertical: 8,
+                  borderRadius: 20,
+                }}
+              >
+                <Text
+                  style={{
+                    color: "#fff",
+                    fontSize: 13,
+                    fontWeight: "600",
+                  }}
+                >
+                  Tap to view in full screen
+                </Text>
+              </View>
+            </View>
+          )}
           {/* Gradient Overlay */}
           <LinearGradient
             colors={[
@@ -485,7 +555,7 @@ const AnimatedPostItem = ({
               borderBottomRightRadius: 30,
             }}
           />
-        </View>
+        </TouchableOpacity>
       ) : (
         <View
           className="w-full bg-black justify-center items-center"
@@ -502,7 +572,7 @@ const getRandomVerse = (): BibleVerse => {
   const randomIndex = Math.floor(Math.random() * BIBLE_VERSES.length);
   const verse = BIBLE_VERSES[randomIndex];
   return {
-    id: `verse-${Date.now()}-${randomIndex}`,
+    id: `verse-${Date.now()}-${randomIndex}-${++verseIdSeq}`,
     type: "verse",
     text: verse.text,
     reference: verse.reference,
@@ -510,7 +580,8 @@ const getRandomVerse = (): BibleVerse => {
 };
 
 export default function HomeScreen() {
-  const { profile, user } = useAuth();
+  const navigation = useNavigation();
+  const { profile, user, fetchAllProfiles, refreshProfile } = useAuth();
   const {
     clearHypedPosts,
     hasUsedDailyHype,
@@ -524,82 +595,167 @@ export default function HomeScreen() {
   const [hasNewPosts, setHasNewPosts] = useState(false);
   const [lastPostId, setLastPostId] = useState<number | null>(null);
   const [showDailyLimitModal, setShowDailyLimitModal] = useState(false);
+  const [hasViewedFullScreen, setHasViewedFullScreen] = useState(true); // start true to avoid flash; set false after load
+  const [showEulaModal, setShowEulaModal] = useState(false);
+  const [eulaAccepting, setEulaAccepting] = useState(false);
+  const [flagTargetPost, setFlagTargetPost] = useState<Post | null>(null);
+  const [showFlagActionModal, setShowFlagActionModal] = useState(false);
+  const [showFlagConfirmModal, setShowFlagConfirmModal] = useState(false);
+  const [isSubmittingFlag, setIsSubmittingFlag] = useState(false);
+  const [isBlockingUser, setIsBlockingUser] = useState(false);
+  const [showFeedbackBanner, setShowFeedbackBanner] = useState(false);
   const lastPostIdRef = useRef<number | null>(null);
   const postsRef = useRef<Post[]>([]);
+  const blockedUserIdsRef = useRef<string[]>([]);
+  const listRef = useRef<Animated.FlatList<FeedItem> | null>(null);
+
   // Track optimistic hype updates: postId -> profileId -> increment amount
   const [optimisticHypeUpdates, setOptimisticHypeUpdates] = useState<
     Map<number, { profileId: string; increment: number }>
   >(new Map());
-  const { bottom } = useSafeAreaInsets();
+
   // Animation for scroll-based scaling
   const scrollY = useSharedValue(0);
 
   // Handle optimistic hype updates
-  const handleOptimisticHypeUpdate = (
-    postId: number,
-    profileId: string,
-    increment: number
-  ) => {
-    setOptimisticHypeUpdates((prev) => {
-      const newMap = new Map(prev);
-      if (increment === 0) {
-        // Remove optimistic update (server confirmed)
-        newMap.delete(postId);
-      } else {
-        const existing = newMap.get(postId);
-        if (existing) {
-          // Update existing optimistic update
-          const newIncrement = existing.increment + increment;
-          if (newIncrement === 0) {
-            newMap.delete(postId);
-          } else {
-            newMap.set(postId, { profileId, increment: newIncrement });
+  const handleOptimisticHypeUpdate = useCallback(
+    (postId: number, profileId: string, increment: number) => {
+      setOptimisticHypeUpdates((prev) => {
+        const newMap = new Map(prev);
+        if (increment === 0) {
+          // Remove optimistic update (server confirmed)
+          newMap.delete(postId);
+        } else {
+          const existing = newMap.get(postId);
+          if (existing) {
+            // Update existing optimistic update
+            const newIncrement = existing.increment + increment;
+            if (newIncrement === 0) {
+              newMap.delete(postId);
+            } else {
+              newMap.set(postId, { profileId, increment: newIncrement });
+            }
+          } else if (increment > 0) {
+            // Add new optimistic update
+            newMap.set(postId, { profileId, increment });
           }
-        } else if (increment > 0) {
-          // Add new optimistic update
-          newMap.set(postId, { profileId, increment });
         }
+        return newMap;
+      });
+
+      // Also update the posts and feedItems state optimistically
+      if (increment !== 0) {
+        setPosts((currentPosts) => {
+          return currentPosts.map((post) => {
+            if (post.id === postId && post.profiles?.id === profileId) {
+              return {
+                ...post,
+                profiles: {
+                  ...post.profiles,
+                  hype: (post.profiles.hype || 0) + increment,
+                },
+              };
+            }
+            return post;
+          });
+        });
+
+        setFeedItems((currentItems) => {
+          return currentItems.map((item) => {
+            if (
+              "type" in item === false &&
+              (item as Post).id === postId &&
+              (item as Post).profiles?.id === profileId
+            ) {
+              return {
+                ...(item as Post),
+                profiles: {
+                  ...(item as Post).profiles!,
+                  hype: ((item as Post).profiles?.hype || 0) + increment,
+                },
+              } as Post;
+            }
+            return item;
+          });
+        });
       }
-      return newMap;
-    });
+    },
+    [],
+  );
 
-    // Also update the posts and feedItems state optimistically
-    if (increment !== 0) {
-      setPosts((currentPosts) => {
-        return currentPosts.map((post) => {
-          if (post.id === postId && post.profiles?.id === profileId) {
-            return {
-              ...post,
-              profiles: {
-                ...post.profiles,
-                hype: (post.profiles.hype || 0) + increment,
-              },
-            };
-          }
-          return post;
-        });
-      });
+  // Test function to simulate sending notifications without posting
+  // const testNotifications = async () => {
+  //   if (!user || !profile) {
+  //     Alert.alert("Error", "User not authenticated");
+  //     return;
+  //   }
 
-      setFeedItems((currentItems) => {
-        return currentItems.map((item) => {
-          if (
-            "type" in item === false &&
-            (item as Post).id === postId &&
-            (item as Post).profiles?.id === profileId
-          ) {
-            return {
-              ...(item as Post),
-              profiles: {
-                ...(item as Post).profiles!,
-                hype: ((item as Post).profiles?.hype || 0) + increment,
-              },
-            } as Post;
-          }
-          return item;
-        });
-      });
-    }
-  };
+  //   try {
+  //     Alert.alert("Testing", "Sending test notifications...");
+
+  //     const allProfiles = await fetchAllProfiles();
+  //     const profilesWithTokens = allProfiles.filter((p) => p.expo_token);
+
+  //     console.log(
+  //       "Profiles with tokens:",
+  //       JSON.stringify(profilesWithTokens, null, 2),
+  //     );
+
+  //     const displayName = profile?.full_name || "Someone";
+
+  //     // Send notifications to all users with expo tokens
+  //     const notificationPromises = profilesWithTokens.map(async (p) => {
+  //       if (!p.expo_token) return;
+
+  //       const message = {
+  //         to: p.expo_token,
+  //         sound: "default",
+  //         title: "Moments",
+  //         body: `${displayName} posted a new moment!`,
+  //         data: {
+  //           route: "/(tabs)",
+  //         },
+  //       };
+
+  //       try {
+  //         const response = await fetch("https://exp.host/--/api/v2/push/send", {
+  //           method: "POST",
+  //           headers: {
+  //             Accept: "application/json",
+  //             "Accept-encoding": "gzip, deflate",
+  //             "Content-Type": "application/json",
+  //           },
+  //           body: JSON.stringify(message),
+  //         });
+
+  //         if (!response.ok) {
+  //           console.error(
+  //             `Failed to send notification to ${p.id}:`,
+  //             response.statusText,
+  //           );
+  //           return { success: false, userId: p.id };
+  //         }
+  //         return { success: true, userId: p.id };
+  //       } catch (error) {
+  //         console.error(`Error sending notification to ${p.id}:`, error);
+  //         return { success: false, userId: p.id, error };
+  //       }
+  //     });
+
+  //     // Wait for all notifications to complete
+  //     const results = await Promise.all(notificationPromises);
+  //     const successful = results.filter((r) => r?.success).length;
+  //     const failed = results.filter((r) => !r?.success).length;
+
+  //     Alert.alert(
+  //       "Test Complete",
+  //       `Notifications sent:\n✅ Success: ${successful}\n❌ Failed: ${failed}\n\nTotal recipients: ${profilesWithTokens.length}`,
+  //     );
+  //   } catch (error) {
+  //     console.error("Error testing notifications:", error);
+  //     Alert.alert("Error", "Failed to test notifications");
+  //   }
+  // };
 
   // Scroll handler to track scroll position
   const scrollHandler = useAnimatedScrollHandler({
@@ -617,6 +773,22 @@ export default function HomeScreen() {
         setLoading(true);
       }
 
+      // Fetch list of users the current user has blocked so we can hide their posts
+      let blockedUserIds: string[] = blockedUserIdsRef.current;
+      if (user?.id && blockedUserIds.length === 0) {
+        const { data: blockedData, error: blockedError } = await supabase
+          .from("blocked_users")
+          .select("blocked_user_id")
+          .eq("blocker_id", user.id);
+
+        if (blockedError) {
+          console.error("Error fetching blocked users:", blockedError);
+        } else if (blockedData) {
+          blockedUserIds = blockedData.map((row) => row.blocked_user_id);
+          blockedUserIdsRef.current = blockedUserIds;
+        }
+      }
+
       const { data, error } = await supabase
         .from("posts")
         .select(
@@ -630,7 +802,7 @@ export default function HomeScreen() {
             avatar_url,
             hype
           )
-        `
+        `,
         )
         .order("created_at", { ascending: false })
         .limit(POST_LIMIT);
@@ -641,9 +813,16 @@ export default function HomeScreen() {
       }
 
       if (data) {
-        const postsData = data as Post[];
+        let postsData = data as Post[];
+
+        // Filter out posts from blocked users on the client side
+        if (blockedUserIds.length > 0) {
+          postsData = postsData.filter(
+            (post) => !blockedUserIds.includes(post.user_id),
+          );
+        }
         console.log(
-          `[Feed] Fetched ${postsData.length} post(s) (limit: ${POST_LIMIT})`
+          `[Feed] Fetched ${postsData.length} post(s) (limit: ${POST_LIMIT})`,
         );
         setPosts(postsData);
         postsRef.current = postsData; // Update ref
@@ -670,7 +849,7 @@ export default function HomeScreen() {
             postsData.length
           } posts + ${
             interleavedItems.length - postsData.length - 1
-          } verses + 1 end message)`
+          } verses + 1 end message)`,
         );
         console.log(`[Feed] ✓ End-of-feed message added to feed`);
 
@@ -700,6 +879,210 @@ export default function HomeScreen() {
   useEffect(() => {
     resetDailyHypeIfNeeded();
   }, []);
+
+  // Show EULA modal for existing users who haven't accepted terms yet
+  useEffect(() => {
+    if (profile && !(profile as Tables<"profiles">).eula_accepted_at) {
+      setShowEulaModal(true);
+    }
+  }, [profile]);
+
+  const handleRequestFlagPost = (post: Post) => {
+    setFlagTargetPost(post);
+    setShowFlagActionModal(true);
+  };
+
+  const handleOpenFlagConfirm = () => {
+    setShowFlagActionModal(false);
+    setShowFlagConfirmModal(true);
+  };
+
+  const handleConfirmFlagPost = async () => {
+    if (!flagTargetPost) return;
+    setIsSubmittingFlag(true);
+    try {
+      const { error } = await supabase
+        .from("posts")
+        .update({ flagged: true })
+        .eq("id", flagTargetPost.id);
+
+      if (error) {
+        console.error("Error flagging post:", error);
+        Alert.alert(
+          "Something went wrong",
+          "We couldn't flag this post right now. Please try again.",
+        );
+        return;
+      }
+
+      // Update local state so UI stays in sync
+      setPosts((current) =>
+        current.map((p) =>
+          p.id === flagTargetPost.id ? { ...p, flagged: true } : p,
+        ),
+      );
+      setFeedItems((current) =>
+        current.map((item) => {
+          if ("type" in item) return item;
+          const postItem = item as Post;
+          if (postItem.id === flagTargetPost.id) {
+            return { ...postItem, flagged: true };
+          }
+          return item;
+        }),
+      );
+
+      Alert.alert(
+        "Thanks for flagging",
+        "Thanks for flagging this post. We'll review it shortly.",
+      );
+    } catch (e) {
+      console.error("Unexpected error flagging post:", e);
+      Alert.alert(
+        "Something went wrong",
+        "We couldn't flag this post right now. Please try again.",
+      );
+    } finally {
+      setIsSubmittingFlag(false);
+      setShowFlagConfirmModal(false);
+      setFlagTargetPost(null);
+    }
+  };
+
+  const handleBlockUserPress = () => {
+    if (!flagTargetPost || !user?.id) return;
+
+    const blockedUserId = flagTargetPost.user_id;
+
+    if (blockedUserId === user.id) {
+      Alert.alert(
+        "You can't block yourself",
+        "You can only block other users' moments.",
+      );
+      return;
+    }
+
+    Alert.alert(
+      "Block this user?",
+      "You won't see any of their moments again. This action cannot be undone in the app. If you ever want to unblock them, you'll need to reach out to our team.",
+      [
+        {
+          text: "Cancel",
+          style: "cancel",
+        },
+        {
+          text: "Block user",
+          style: "destructive",
+          onPress: async () => {
+            if (isBlockingUser) return;
+            setIsBlockingUser(true);
+            try {
+              const { error } = await supabase.from("blocked_users").upsert(
+                {
+                  blocker_id: user.id,
+                  blocked_user_id: blockedUserId,
+                },
+                { onConflict: "blocker_id,blocked_user_id" },
+              );
+
+              if (error) {
+                console.error("Error blocking user:", error);
+                Alert.alert(
+                  "Something went wrong",
+                  "We couldn't block this user right now. Please try again.",
+                );
+                return;
+              }
+
+              // Update local blocked users list so new posts are also hidden
+              blockedUserIdsRef.current = Array.from(
+                new Set([...blockedUserIdsRef.current, blockedUserId]),
+              );
+
+              // Remove this user's posts from the current feed immediately
+              setPosts((current) =>
+                current.filter((p) => p.user_id !== blockedUserId),
+              );
+              setFeedItems((current) =>
+                current.filter(
+                  (item) =>
+                    "type" in item ||
+                    ((item as Post).user_id &&
+                      (item as Post).user_id !== blockedUserId),
+                ),
+              );
+
+              setShowFlagActionModal(false);
+              setShowFlagConfirmModal(false);
+              setFlagTargetPost(null);
+
+              Alert.alert(
+                "User blocked",
+                "You won't see any of this user's moments again. To unblock them in the future, please contact our team.",
+              );
+            } catch (e) {
+              console.error("Unexpected error blocking user:", e);
+              Alert.alert(
+                "Something went wrong",
+                "We couldn't block this user right now. Please try again.",
+              );
+            } finally {
+              setIsBlockingUser(false);
+            }
+          },
+        },
+      ],
+    );
+  };
+
+  const handleAcceptEula = async () => {
+    if (!user?.id) return;
+    setEulaAccepting(true);
+    try {
+      const { error } = await supabase
+        .from("profiles")
+        .update({
+          eula_accepted_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", user.id);
+
+      if (error) throw error;
+      await refreshProfile();
+      setShowEulaModal(false);
+    } catch (e) {
+      console.error("Failed to accept EULA:", e);
+    } finally {
+      setEulaAccepting(false);
+    }
+  };
+
+  // Load "has viewed full screen" once so we only show the hint on first post until first view
+  useEffect(() => {
+    AsyncStorage.getItem(HAS_VIEWED_FULL_SCREEN_KEY).then((value) => {
+      setHasViewedFullScreen(value === "true");
+    });
+  }, []);
+
+  const hideFeedbackBanner = async () => {
+    try {
+      await AsyncStorage.setItem(FEEDBACK_BANNER_DISMISSED_KEY, "true");
+    } catch (error) {
+      console.error("Failed to persist feedback banner dismissal:", error);
+    } finally {
+      setShowFeedbackBanner(false);
+    }
+  };
+
+  const handlePressFeedback = async () => {
+    try {
+      await Linking.openURL("https://moments.canny.io/feature-requests");
+    } catch (error) {
+      console.error("Failed to open feedback URL:", error);
+    } finally {
+      hideFeedbackBanner();
+    }
+  };
 
   useEffect(() => {
     fetchPosts();
@@ -733,10 +1116,11 @@ export default function HomeScreen() {
             const currentLastPostId = lastPostIdRef.current;
             const currentPosts = postsRef.current;
             const currentUserId = profile?.id;
+            const blockedUserIds = blockedUserIdsRef.current;
 
             // Check if post already exists in current feed
             const postAlreadyExists = currentPosts.some(
-              (post) => post.id === newPost.id
+              (post) => post.id === newPost.id,
             );
 
             // Check if this is actually a new post (not already in the feed and newer than last post)
@@ -754,6 +1138,14 @@ export default function HomeScreen() {
               currentPostsCount: currentPosts.length,
             });
 
+            // Ignore posts from users that the current user has blocked
+            if (blockedUserIds.includes(newPost.user_id)) {
+              console.log(
+                "New post from blocked user received, ignoring for feed UI",
+              );
+              return;
+            }
+
             if (newPost.user_id === currentUserId) {
               // If it's the current user's post, refresh immediately
               console.log("Current user's post, refreshing immediately");
@@ -765,7 +1157,7 @@ export default function HomeScreen() {
             } else {
               console.log("Post is not new or already loaded, ignoring");
             }
-          }
+          },
         )
         .on(
           "postgres_changes",
@@ -777,6 +1169,20 @@ export default function HomeScreen() {
           (payload) => {
             const updatedProfile = payload.new as Tables<"profiles">;
             const oldProfile = payload.old as Tables<"profiles">;
+
+            // Check if full_name changed (current user's profile)
+            if (
+              updatedProfile.id === profile?.id &&
+              updatedProfile.full_name !== oldProfile.full_name
+            ) {
+              console.log("Profile full_name updated via realtime:", {
+                profileId: updatedProfile.id,
+                oldName: oldProfile.full_name,
+                newName: updatedProfile.full_name,
+              });
+              // Refresh profile to update context
+              refreshProfile();
+            }
 
             // Check if hype count changed
             if (updatedProfile.hype !== oldProfile.hype) {
@@ -833,7 +1239,7 @@ export default function HomeScreen() {
                 });
               });
             }
-          }
+          },
         )
         .on(
           "postgres_changes",
@@ -852,23 +1258,23 @@ export default function HomeScreen() {
             // Refetch all posts when a delete event occurs
             // This ensures the UI updates immediately after delete all posts function is invoked
             fetchPosts();
-          }
+          },
         )
         .subscribe((status, err) => {
           console.log("Subscription status:", status, "Channel:", channelName);
           if (status === "SUBSCRIBED") {
             console.log(
-              "Successfully subscribed to posts_changes (INSERT/DELETE) and profile_updates"
+              "Successfully subscribed to posts_changes (INSERT/DELETE) and profile_updates",
             );
           } else if (status === "CHANNEL_ERROR") {
             console.error("Channel subscription error:", err);
             console.error("Error details:", JSON.stringify(err, null, 2));
             console.error("Possible causes:");
             console.error(
-              "1. RLS policies blocking access - check Database > Tables > posts > Policies"
+              "1. RLS policies blocking access - check Database > Tables > posts > Policies",
             );
             console.error(
-              "2. Realtime not enabled for posts table - check Database > Replication"
+              "2. Realtime not enabled for posts table - check Database > Replication",
             );
             console.error("3. Network/authentication issues");
           } else if (status === "TIMED_OUT") {
@@ -890,10 +1296,35 @@ export default function HomeScreen() {
     };
   }, [profile?.id]);
 
+  const isFocused = useIsFocused();
+
   const onRefresh = () => {
     console.log("[Refresh] Pull to refresh triggered");
     fetchPosts(true);
   };
+
+  // When the Home tab icon is pressed:
+  // 1) scroll to top (smooth)
+  // 2) show refresh indicator
+  // 3) refresh posts
+  useEffect(() => {
+    const nav: any = navigation;
+    const unsubscribe = nav.addListener("tabPress", () => {
+      // Only trigger scroll-to-top + refresh when this screen is already focused
+      if (!isFocused) {
+        return;
+      }
+      if (listRef.current) {
+        // Always scroll to absolute offset 0 so the refresh indicator is fully visible.
+        // scrollToIndex(0) can stop at item layout offset when getItemLayout is provided.
+        listRef.current.scrollToOffset({ offset: 0, animated: true });
+      }
+      // Kick off refresh right after the scroll request
+      requestAnimationFrame(() => onRefresh());
+    });
+
+    return unsubscribe;
+  }, [navigation, isFocused, onRefresh]);
 
   const formatDate = (dateString: string) => {
     const date = new Date(dateString);
@@ -914,6 +1345,8 @@ export default function HomeScreen() {
     }
   };
 
+  const firstPostIndex = feedItems.findIndex((i) => !("type" in i));
+
   if (loading && posts.length === 0) {
     return (
       <Container>
@@ -927,15 +1360,29 @@ export default function HomeScreen() {
 
   return (
     <Container>
+      <UpdateModal />
       <View className="flex-1">
         <View className="flex-row items-center justify-between pb-4 mb-0">
           <View className="flex-row items-center gap-2">
             <Text className="text-white text-2xl font-bold">
-              Hey {profile?.username}
+              Hey {profile?.full_name || profile?.username || "there"}
             </Text>
             <HelloWave />
           </View>
+          <TouchableOpacity
+            onPress={handlePressFeedback}
+            className="bg-primary p-3 rounded-2xl flex-row items-center justify-center gap-2"
+          >
+            <Text className="text-white font-semibold">Feedback</Text>
+            <Ionicons
+              name="chatbox-ellipses-outline"
+              size={20}
+              color="#ffffff"
+            />
+          </TouchableOpacity>
         </View>
+
+        <SneakPeekUpdateCard />
 
         {/* Refresh Button - shown when new posts are available */}
         {hasNewPosts && (
@@ -954,17 +1401,34 @@ export default function HomeScreen() {
 
         {posts.length === 0 ? (
           <View className="flex-1 items-center justify-center">
-            <Text className="text-white text-2xl mb-2">No posts yet</Text>
+            <Text className="text-white text-2xl mb-2">No moments yet</Text>
             <Text className="text-gray-400 text-center px-6">
               Be the first to share a moment!
             </Text>
           </View>
         ) : (
           <Animated.FlatList
+            ref={listRef}
             data={feedItems}
             onScroll={scrollHandler}
             scrollEventThrottle={16}
             ItemSeparatorComponent={null}
+            onScrollToIndexFailed={(info) => {
+              // If the list hasn't measured items yet, fall back to offset 0 and retry quickly.
+              // This keeps the interaction smooth without getting "stuck" short of the top.
+              if (listRef.current) {
+                listRef.current.scrollToOffset({ offset: 0, animated: true });
+                requestAnimationFrame(() => {
+                  try {
+                    listRef.current?.scrollToIndex({
+                      index: 0,
+                      animated: true,
+                      viewPosition: 0,
+                    });
+                  } catch {}
+                });
+              }
+            }}
             renderItem={({ item, index }) => {
               // Calculate accumulated offset for more accurate positioning
               let accumulatedOffset = 100; // Header height
@@ -996,12 +1460,6 @@ export default function HomeScreen() {
               }
 
               if ("type" in item && item.type === "endOfFeed") {
-                // Log when end-of-feed is rendered (only once to avoid spam)
-                if (index === feedItems.length - 1) {
-                  console.log(
-                    `[Feed] Rendering end-of-feed message at index ${index}`
-                  );
-                }
                 return (
                   <AnimatedEndOfFeedItem
                     scrollY={scrollY}
@@ -1020,6 +1478,14 @@ export default function HomeScreen() {
                   optimisticHypeUpdates={optimisticHypeUpdates}
                   onOptimisticHypeUpdate={handleOptimisticHypeUpdate}
                   onDailyLimitReached={() => setShowDailyLimitModal(true)}
+                  showFullScreenHint={
+                    !hasViewedFullScreen && index === firstPostIndex
+                  }
+                  onViewFullScreen={() => {
+                    setHasViewedFullScreen(true);
+                    AsyncStorage.setItem(HAS_VIEWED_FULL_SCREEN_KEY, "true");
+                  }}
+                  onRequestFlagPost={handleRequestFlagPost}
                 />
               );
             }}
@@ -1063,6 +1529,153 @@ export default function HomeScreen() {
         visible={showDailyLimitModal}
         onClose={() => setShowDailyLimitModal(false)}
       />
+
+      {/* Flag action modal: shown after long-press, prominent flag button with icon */}
+      <Modal
+        animationType="fade"
+        transparent
+        visible={showFlagActionModal}
+        statusBarTranslucent
+        onRequestClose={() => {
+          setShowFlagActionModal(false);
+          setFlagTargetPost(null);
+        }}
+      >
+        <View
+          className="flex-1 items-center justify-center px-6"
+          style={{ backgroundColor: "rgba(0, 0, 0, 0.8)" }}
+        >
+          <View className="bg-secondary p-6 rounded-2xl w-full max-w-md items-center">
+            <TouchableOpacity
+              onPress={handleOpenFlagConfirm}
+              className="flex-row items-center justify-center gap-3 w-full py-4 px-6 rounded-xl bg-red-900 border-2 border-red-700"
+              activeOpacity={0.85}
+            >
+              <Ionicons name="flag" size={24} color="#fff" />
+              <Text className="text-white font-bold text-lg">Flag post</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={handleBlockUserPress}
+              className="flex-row items-center justify-center gap-3 w-full py-3 px-6 rounded-xl bg-white/10 border border-white/20 mt-3"
+              activeOpacity={0.85}
+              disabled={isBlockingUser}
+            >
+              {isBlockingUser ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <>
+                  <Ionicons name="person-remove" size={22} color="#fff" />
+                  <Text className="text-white font-semibold text-base">
+                    Block user
+                  </Text>
+                </>
+              )}
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => {
+                setShowFlagActionModal(false);
+                setFlagTargetPost(null);
+              }}
+              className="mt-4 py-3 px-6"
+            >
+              <Text className="text-gray-400 font-medium">Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        animationType="fade"
+        transparent
+        visible={showFlagConfirmModal}
+        statusBarTranslucent
+        onRequestClose={() => {
+          if (isSubmittingFlag) return;
+          setShowFlagConfirmModal(false);
+          setFlagTargetPost(null);
+        }}
+      >
+        <View
+          className="flex-1 items-center justify-center px-6"
+          style={{ backgroundColor: "rgba(0, 0, 0, 0.85)" }}
+        >
+          <View className="bg-secondary p-6 rounded-2xl w-full max-w-md">
+            <Text className="text-white text-xl font-bold mb-3 text-center">
+              Flag this post?
+            </Text>
+            <Text className="text-gray-300 text-center mb-6">
+              We&apos;ll review flagged posts to make sure they follow our
+              community guidelines.
+            </Text>
+            <View className="flex-row gap-3">
+              <TouchableOpacity
+                onPress={() => {
+                  if (isSubmittingFlag) return;
+                  setShowFlagConfirmModal(false);
+                  setFlagTargetPost(null);
+                }}
+                className="flex-1 py-3 rounded-lg items-center bg-white/10"
+                disabled={isSubmittingFlag}
+              >
+                <Text className="text-white font-semibold">Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={handleConfirmFlagPost}
+                disabled={isSubmittingFlag}
+                className="flex-1 py-3 rounded-lg items-center justify-center flex-row gap-2 bg-red-600"
+              >
+                {isSubmittingFlag ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <>
+                    <Ionicons name="flag" size={20} color="#fff" />
+                    <Text className="text-white font-semibold">Flag post</Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        animationType="fade"
+        transparent
+        visible={showEulaModal}
+        statusBarTranslucent
+      >
+        <View
+          className="flex-1 items-center justify-center px-6"
+          style={{ backgroundColor: "rgba(0, 0, 0, 0.85)" }}
+        >
+          <View className="bg-secondary p-6 rounded-2xl w-full max-w-md">
+            <Text className="text-white text-xl font-bold mb-3 text-center">
+              Terms of Use & Community Guidelines
+            </Text>
+            <Text className="text-gray-300 text-center mb-6">
+              We have zero tolerance for objectionable content or abusive
+              behavior. By continuing, you agree to our Terms of Use and
+              Community Guidelines.
+            </Text>
+            <TouchableOpacity
+              onPress={() => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                handleAcceptEula();
+              }}
+              disabled={eulaAccepting}
+              className="bg-primary py-4 rounded-lg items-center"
+            >
+              {eulaAccepting ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <Text className="text-white font-semibold text-lg">
+                  I agree
+                </Text>
+              )}
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </Container>
   );
 }

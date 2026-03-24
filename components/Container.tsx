@@ -9,5 +9,5 @@ export const Container = ({ children }: { children: React.ReactNode }) => {
 };
 
 const styles = {
-  container: "flex bg-background flex-1 p-2 sm:p-20",
+  container: "flex bg-background flex-1 p-2 sm:p-2",
 };
