@@ -9,15 +9,8 @@ import {
   Directions,
   Gesture,
   GestureDetector,
-  GestureHandlerRootView,
 } from "react-native-gesture-handler";
-import Animated, {
-  FadeIn,
-  FadeOut,
-  SlideInRight,
-  SlideOutLeft,
-  runOnJS,
-} from "react-native-reanimated";
+import Animated, { FadeIn, FadeOut, runOnJS } from "react-native-reanimated";
 
 const WELCOME_COMPLETED_KEY = "@welcome_completed";
 
@@ -25,11 +18,10 @@ const slides = [
   {
     id: 1,
     title: "Welcome to Moments",
-    description:
-      "An app that helps you capture and share unique moments from your day.",
+    description: "An app that helps you capture unique moments from your day.",
     emoji: (
       <Image
-        source={require("@/assets/images/moments-LOGO.png")}
+        source={require("@/assets/images/icon.png")}
         style={{
           width: 120,
           height: 120,
@@ -42,7 +34,7 @@ const slides = [
     id: 2,
     title: "Share",
     description:
-      "Take intentional photos that you'll want to remember and share.",
+      "Capture photos you'll want to remember and share with your friends.",
     emoji: (
       <Image
         source={require("@/assets/images/people.png")}
@@ -58,7 +50,7 @@ const slides = [
     id: 3,
     title: "Intentional",
     description:
-      "One photo a day to slow down and capture the moments that matter.",
+      "Only one photo a day to slow down and capture the moments that matter.",
     emoji: (
       <Image
         source={require("@/assets/images/camera.png")}
@@ -70,12 +62,6 @@ const slides = [
       />
     ),
   },
-  // {
-  //   id: 4,
-  //   title: "Enjoy",
-  //   description: "Enjoy your photos and relive the moment.",
-  //   emoji: "🎉",
-  // },
 ];
 
 export default function WelcomeScreen() {
@@ -145,60 +131,53 @@ export default function WelcomeScreen() {
           />
         ))}
       </View>
-      <GestureHandlerRootView style={{ flex: 1 }}>
-        <GestureDetector gesture={swipes}>
-          <Animated.View
-            className="flex-1"
-            key={screenIndex}
-            collapsable={false}
-          >
-            {/* Centered Content - Emoji, Title, Description */}
-            <View className="flex-1 gap-4 justify-center items-center px-5">
-              {/* Emoji Icon */}
-              <Animated.View
-                className="rounded-3xl overflow-hidden mb-2 items-center justify-center"
-                style={{ height: 120, width: 120 }}
-                entering={FadeIn}
-                exiting={FadeOut}
-              >
-                {data.emoji}
-              </Animated.View>
 
-              {/* Title */}
-              <Animated.Text
-                entering={SlideInRight}
-                exiting={SlideOutLeft}
-                className="text-white text-4xl font-bold text-center"
-              >
-                {data.title}
-              </Animated.Text>
+      <GestureDetector gesture={swipes}>
+        <Animated.View className="flex-1" key={screenIndex} collapsable={false}>
+          {/* Centered Content - Emoji, Title, Description */}
+          <View className="flex-1 gap-4  justify-center items-center px-5">
+            {/* Emoji Icon */}
+            <Animated.View
+              className={
+                "rounded-3xl overflow-hidden mb-2 items-center justify-center"
+              }
+              style={{ height: 120, width: 120 }}
+              entering={FadeIn}
+              exiting={FadeOut}
+            >
+              {data.emoji}
+            </Animated.View>
 
-              {/* Description */}
-              <Animated.Text
-                entering={SlideInRight.delay(50)}
-                exiting={SlideOutLeft}
-                className="text-gray-300 text-base mt-0 text-center max-w-xs"
-              >
-                {data.description}
-              </Animated.Text>
-            </View>
+            <Animated.Text
+              entering={FadeIn.delay(100)}
+              exiting={FadeOut}
+              className="text-white text-4xl font-bold text-center"
+            >
+              {data.title}
+            </Animated.Text>
 
-            {/* Bottom Buttons - Fixed at bottom */}
-            <View className="flex-row w-full items-center gap-5 px-5 pb-12">
-              <Pressable
-                onPress={onContinue}
-                className="bg-primary p-4 flex-1 rounded-xl justify-center items-center"
-              >
-                <Text className="text-white font-semibold text-lg">
-                  {screenIndex === slides.length - 1
-                    ? "Get Started"
-                    : "Continue"}
-                </Text>
-              </Pressable>
-            </View>
-          </Animated.View>
-        </GestureDetector>
-      </GestureHandlerRootView>
+            <Animated.Text
+              entering={FadeIn.delay(200)}
+              exiting={FadeOut}
+              className="text-gray-300 text-base mt-0 text-center max-w-xs"
+            >
+              {data.description}
+            </Animated.Text>
+          </View>
+
+          {/* Bottom Buttons - Fixed at bottom */}
+          <View className="flex-row w-full items-center gap-5 px-5 pb-12">
+            <Pressable
+              onPress={onContinue}
+              className="bg-primary p-4 flex-1 rounded-xl justify-center items-center"
+            >
+              <Text className="text-white font-semibold text-lg">
+                {screenIndex === slides.length - 1 ? "Get Started" : "Continue"}
+              </Text>
+            </Pressable>
+          </View>
+        </Animated.View>
+      </GestureDetector>
     </Container>
   );
 }

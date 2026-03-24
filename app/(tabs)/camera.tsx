@@ -30,6 +30,7 @@ import {
   ActivityIndicator,
   Alert,
   Dimensions,
+  Linking,
   PixelRatio,
   Text,
   TouchableOpacity,
@@ -45,6 +46,12 @@ import {
   useAnimatedReaction,
   useSharedValue,
 } from "react-native-reanimated";
+// import { VolumeManager } from "react-native-volume-manager";
+
+// // Disable the native volume toast globally (iOS, Android)
+// VolumeManager.showNativeVolumeUI({ enabled: false });
+
+// Listen to volume changes
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get("window");
 
@@ -56,7 +63,7 @@ const findUltraWideLens = (lenses: string[]): string | undefined => {
     (lens) =>
       lens.toLowerCase().includes("back ultra wide camera") ||
       lens.toLowerCase().includes("ultrawide") ||
-      lens === "builtInUltraWideCamera"
+      lens === "builtInUltraWideCamera",
   );
 };
 
@@ -70,7 +77,7 @@ const findDefaultLens = (lenses: string[]): string | undefined => {
 
   // Fallback: look for any lens that is just "Back Camera" (case insensitive)
   const backCameraCaseInsensitive = lenses.find(
-    (lens) => lens.toLowerCase() === "back camera"
+    (lens) => lens.toLowerCase() === "back camera",
   );
   if (backCameraCaseInsensitive) return backCameraCaseInsensitive;
 
@@ -82,7 +89,7 @@ const findDefaultLens = (lenses: string[]): string | undefined => {
       !lens.toLowerCase().includes("telephoto") &&
       !lens.toLowerCase().includes("lidar") &&
       lens.toLowerCase() !== "back dual camera" &&
-      !lens.toLowerCase().includes("dual wide")
+      !lens.toLowerCase().includes("dual wide"),
   );
 };
 
@@ -94,8 +101,9 @@ export default function CameraScreen() {
   // Zoom level: "0.5x", "1x", or "3x" (for UI display)
   const [zoomLevel, setZoomLevel] = useState<"0.5x" | "1x" | "3x">("0.5x");
   const [availableLenses, setAvailableLenses] = useState<string[]>([]);
+  const [isCameraReady, setIsCameraReady] = useState(false);
   const [selectedLens, setSelectedLens] = useState<string | undefined>(
-    undefined
+    undefined,
   );
   const { checkIfCanPost } = usePostStore();
   const [facing, setFacing] = useState<"front" | "back">("back");
@@ -119,11 +127,24 @@ export default function CameraScreen() {
     currentZoomRef.current = currentZoom;
   }, [currentZoom]);
 
+  // useEffect(() => {
+  //   if (!isCameraReady) return;
+
+  //   const volumeListener = VolumeManager.addVolumeListener((result) => {
+  //     console.log("volume changed", result);
+  //     takePicture();
+  //   });
+
+  //   return () => {
+  //     volumeListener.remove();
+  //   };
+  // }, [isCameraReady]);
+
   // Clear captured image when screen comes into focus (e.g., returning from modal)
   useFocusEffect(
     useCallback(() => {
       setCapturedImageUri(null);
-    }, [])
+    }, []),
   );
 
   // Smoothly animate zoom changes from shared value to React state
@@ -136,19 +157,19 @@ export default function CameraScreen() {
       // Reanimated handles this efficiently on the UI thread
       runOnJS(setCurrentZoom)(currentZoomValue);
     },
-    [currentZoom]
+    [currentZoom],
   );
 
   // Use captured image if available
   const image = useImage(capturedImageUri);
 
   const cinematicMatrix = [
-    // R' row
-    1.2, -0.1, -0.1, 0, 0,
-    // G' row
-    -0.1, 1.05, -0.1, 0, 0,
-    // B' row
-    -0.1, -0.1, 1.3, 0, 0,
+    // R' row - increased red and added yellow tint
+    1.25, 0.05, -0.15, 0, 0.02,
+    // G' row - increased green for yellow warmth
+    0.05, 1.15, -0.1, 0, 0.01,
+    // B' row - reduced blue to enhance yellow/cinematic look
+    -0.1, -0.05, 1.2, 0, -0.01,
     // A' row
     0, 0, 0, 1, 0,
   ];
@@ -159,6 +180,16 @@ export default function CameraScreen() {
 uniform shader image;
 uniform float intensity;
 uniform float2 resolution;
+
+//create variables for shadow intensity and increase it through a function
+uniform float shadowIntensity;
+uniform float2 shadowOffset;    
+
+
+
+
+
+
 
 float random(float2 uv) {
   return fract(sin(dot(uv, float2(12.9898, 78.233))) * 43758.5453);
@@ -209,7 +240,7 @@ half4 main(float2 xy) {
               router.back();
             },
           },
-        ]
+        ],
       );
       return;
     }
@@ -230,7 +261,7 @@ half4 main(float2 xy) {
           const manipulatedImage = await ImageManipulator.manipulateAsync(
             photo.uri,
             [{ resize: { width: 1080 } }],
-            { compress: 1, format: ImageManipulator.SaveFormat.PNG }
+            { compress: 1, format: ImageManipulator.SaveFormat.PNG },
           );
 
           // Store resized image URI in Zustand store for post-preview screen
@@ -290,7 +321,7 @@ half4 main(float2 xy) {
           const fallbackLens = lenses.find(
             (lens) =>
               lens.toLowerCase().includes("wide") &&
-              !lens.toLowerCase().includes("telephoto")
+              !lens.toLowerCase().includes("telephoto"),
           );
           if (fallbackLens) {
             lensToSelect = fallbackLens;
@@ -306,7 +337,7 @@ half4 main(float2 xy) {
       setSelectedLens(lensToSelect);
       return lensToSelect;
     },
-    []
+    [],
   );
 
   // Handle available lenses change - set lens immediately for fast initialization
@@ -325,7 +356,7 @@ half4 main(float2 xy) {
         selectLensForZoomLevel(lenses, zoomLevel);
       }
     },
-    [zoomLevel, selectLensForZoomLevel]
+    [zoomLevel, selectLensForZoomLevel],
   );
 
   // // Update selected lens when zoom level changes (but only if lenses are already available and initialized)
@@ -393,6 +424,7 @@ half4 main(float2 xy) {
   };
 
   // Pinch gesture for zoom - following latest react-native-gesture-handler patterns
+  // Pinch gesture for zoom - following latest react-native-gesture-handler patterns
   const pinchGesture = useMemo(() => {
     return Gesture.Pinch()
       .onBegin(() => {
@@ -446,7 +478,7 @@ half4 main(float2 xy) {
       if (status !== "granted") {
         Alert.alert(
           "Permission denied",
-          "Please grant permission to save images"
+          "Please grant permission to save images",
         );
         return;
       }
@@ -480,12 +512,19 @@ half4 main(float2 xy) {
     }
   };
 
-  // Handle camera permissions
+  // Handle camera permissions: request automatically when camera screen is shown (no custom pre-permission button)
+  useEffect(() => {
+    if (permission && !permission.granted && permission.canAskAgain) {
+      requestPermission();
+    }
+  }, [permission?.granted, permission?.canAskAgain]);
+
   if (!permission) {
     return <View className="flex-1 bg-black" />;
   }
 
-  if (!permission.granted) {
+  // Only show custom UI when user has already denied (canAskAgain is false). Otherwise show camera and system dialog will appear.
+  if (!permission.granted && !permission.canAskAgain) {
     return (
       <View className="flex-1 bg-background justify-center items-center">
         <View className="absolute top-10 left-2 z-50 pt-12 px-4">
@@ -503,19 +542,20 @@ half4 main(float2 xy) {
             <Ionicons name="arrow-back" size={24} color="white" />
           </TouchableOpacity>
         </View>
+        <Text className="text-white text-center px-6 mb-4">
+          Camera access is needed to take photos. You can enable it in Settings.
+        </Text>
         <TouchableOpacity
-          onPress={requestPermission}
+          onPress={() => Linking.openSettings()}
           className="bg-white px-6 py-3 rounded-lg"
         >
-          <Text className="text-black font-semibold">
-            Grant Camera Permission
-          </Text>
+          <Text className="text-black font-semibold">Open Settings</Text>
         </TouchableOpacity>
       </View>
     );
   }
 
-  // Show camera if no image captured yet
+  // Show camera if no image captured yet (only mount CameraView when permission.granted so feed shows immediately after Allow)
   if (!capturedImageUri) {
     return (
       <GestureHandlerRootView style={{ flex: 1 }}>
@@ -538,16 +578,21 @@ half4 main(float2 xy) {
                   <Ionicons name="arrow-back" size={24} color="white" />
                 </TouchableOpacity>
               </View>
-              <CameraView
-                ref={cameraRef}
-                style={{ flex: 1 }}
-                facing={facing}
-                zoom={currentZoom}
-                mirror={facing === "front"}
-                flash={flashMode}
-                selectedLens={selectedLens}
-                onAvailableLensesChanged={handleAvailableLensesChanged}
-              />
+              {permission.granted ? (
+                <CameraView
+                  ref={cameraRef}
+                  style={{ flex: 1 }}
+                  facing={facing}
+                  zoom={currentZoom}
+                  mirror={facing === "front"}
+                  flash={flashMode}
+                  selectedLens={selectedLens}
+                  onAvailableLensesChanged={handleAvailableLensesChanged}
+                  onCameraReady={() => setIsCameraReady(true)}
+                />
+              ) : (
+                <View style={{ flex: 1, backgroundColor: "black" }} />
+              )}
               {/* Fading bottom border */}
               <View
                 className="absolute bottom-0 left-0 right-0"
@@ -564,7 +609,7 @@ half4 main(float2 xy) {
                   const maxDistance = 30;
                   const opacity = Math.max(
                     0,
-                    1 - (distance / maxDistance) * 1.2
+                    1 - (distance / maxDistance) * 1.2,
                   );
                   const width = SCREEN_WIDTH / 60;
 
@@ -725,7 +770,7 @@ half4 main(float2 xy) {
   const scaledImageHeight = imageHeight * pixelDensity;
 
   return (
-    <View className="flex-1 bg-black ">
+    <View className="flex-1 bg-background ">
       <View className="flex-1 items-center justify-center">
         <Canvas
           ref={canvasRef}
@@ -751,7 +796,7 @@ half4 main(float2 xy) {
                 <RuntimeShader
                   source={grainEffect}
                   uniforms={{
-                    intensity: 0.15, // Super obvious intensity for testing
+                    intensity: 0.12, // Super obvious intensity for testing
                     resolution: [scaledImageWidth, scaledImageHeight],
                   }}
                 />

@@ -1,11 +1,14 @@
+import Feather from "@expo/vector-icons/Feather";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { Skia, useCanvasRef } from "@shopify/react-native-skia";
+import * as Application from "expo-application";
 import * as FileSystem from "expo-file-system/legacy";
 import * as Haptics from "expo-haptics";
 import { Image as ExpoImage } from "expo-image";
 import * as ImagePicker from "expo-image-picker";
 import * as MediaLibrary from "expo-media-library";
-import { useEffect, useMemo, useState } from "react";
+import { router } from "expo-router";
+import { useEffect, useState } from "react";
 import {
   Alert,
   Dimensions,
@@ -14,17 +17,21 @@ import {
   Modal,
   PixelRatio,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
 
 import { Container } from "@/components/Container";
+import { ImageEditorModal } from "@/components/ImageEditorModal";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/lib/supabase";
 import { getStorageUrl } from "@/lib/utils";
 import { useHypeStore } from "@/store/hypeStore";
 import { useStreakStore } from "@/store/streakStore";
+import { useUserStore } from "@/store/userStore";
 import { LinearGradient } from "expo-linear-gradient";
+import { ActivityIndicator } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get("window");
@@ -39,11 +46,22 @@ interface Post {
 }
 
 export default function ProfileScreen() {
-  const { user, profile, signOut, deleteAccount, refreshProfile } = useAuth();
+  const {
+    user,
+    profile,
+    signOut,
+    deleteAccount,
+    refreshProfile,
+    loading: authLoading,
+  } = useAuth();
+  const { profile: persistedProfile } = useUserStore();
   const { syncWithSupabase: syncStreakWithSupabase } = useStreakStore();
   const { syncWithSupabase: syncHypeWithSupabase } = useHypeStore();
-  const avatarUrl = getStorageUrl(profile?.avatar_url, "avatars");
+  // Use context profile as primary, persisted profile as fallback
+  const currentProfile = profile || persistedProfile;
+  const avatarUrl = getStorageUrl(currentProfile?.avatar_url, "avatars");
   const [profileImageUri, setProfileImageUri] = useState<string | null>(null);
+  const [showImageEditor, setShowImageEditor] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -51,74 +69,78 @@ export default function ProfileScreen() {
   const [loadingPosts, setLoadingPosts] = useState(false);
   const [showSaveModal, setShowSaveModal] = useState(false);
   const [selectedPostImage, setSelectedPostImage] = useState<string | null>(
-    null
+    null,
   );
   const [saving, setSaving] = useState(false);
   const [deletingAllPosts, setDeletingAllPosts] = useState(false);
+  const [showEditNameModal, setShowEditNameModal] = useState(false);
+  const [editingName, setEditingName] = useState("");
+  const [updatingName, setUpdatingName] = useState(false);
+  const [showBoostedModal, setShowBoostedModal] = useState(false);
   const canvasRef = useCanvasRef();
   const pixelDensity = PixelRatio.get();
 
-  // Blue glow effect shader for logo
-  const blueGlowEffect = useMemo(() => {
-    const source = Skia.RuntimeEffect.Make(`
-uniform shader image;
-uniform float2 resolution;
-uniform float glowRadius;
-uniform float glowIntensity;
+  //   // Blue glow effect shader for logo
+  //   const blueGlowEffect = useMemo(() => {
+  //     const source = Skia.RuntimeEffect.Make(`
+  // uniform shader image;
+  // uniform float2 resolution;
+  // uniform float glowRadius;
+  // uniform float glowIntensity;
 
-half4 main(float2 xy) {
-  // Get the original image color
-  half4 originalColor = image.eval(xy);
-  
-  // Calculate UV coordinates
-  float2 uv = xy / resolution;
-  
-  // Blue glow color (#0561e0 = RGB(5, 97, 224))
-  float3 glowColor = float3(0.0196, 0.3804, 0.8784);
-  
-  // Sample surrounding pixels to create glow
-  // Use constant loop bound (16 samples) - SKSL requires compile-time constants
-  const int SAMPLES = 16;
-  float glowAlpha = 0.0;
-  float step = glowRadius / float(SAMPLES);
-  
-  for (int i = 0; i < SAMPLES; i++) {
-    float angle = (float(i) / float(SAMPLES)) * 6.28318; // 2 * PI
-    float2 offset = float2(cos(angle), sin(angle)) * step * float(i + 1);
-    float2 sampleUV = uv + offset / resolution;
-    
-    // Sample the image at offset position
-    half4 sampleColor = image.eval(sampleUV * resolution);
-    
-    // Accumulate glow based on alpha of sampled pixels
-    glowAlpha += sampleColor.a * (1.0 - float(i) / float(SAMPLES));
-  }
-  
-  glowAlpha = glowAlpha / float(SAMPLES) * glowIntensity;
-  
-  // Blend original color with glow
-  float3 finalColor = originalColor.rgb + glowColor * glowAlpha;
-  
-  return half4(
-    clamp(finalColor.r, 0.0, 1.0),
-    clamp(finalColor.g, 0.0, 1.0),
-    clamp(finalColor.b, 0.0, 1.0),
-    max(originalColor.a, glowAlpha)
-  );
-}
-`);
-    if (!source) {
-      console.error("Failed to create glow effect");
-      return null;
-    }
-    return source;
-  }, []);
+  // half4 main(float2 xy) {
+  //   // Get the original image color
+  //   half4 originalColor = image.eval(xy);
+
+  //   // Calculate UV coordinates
+  //   float2 uv = xy / resolution;
+
+  //   // Blue glow color (#0561e0 = RGB(5, 97, 224))
+  //   float3 glowColor = float3(0.0196, 0.3804, 0.8784);
+
+  //   // Sample surrounding pixels to create glow
+  //   // Use constant loop bound (16 samples) - SKSL requires compile-time constants
+  //   const int SAMPLES = 16;
+  //   float glowAlpha = 0.0;
+  //   float step = glowRadius / float(SAMPLES);
+
+  //   for (int i = 0; i < SAMPLES; i++) {
+  //     float angle = (float(i) / float(SAMPLES)) * 6.28318; // 2 * PI
+  //     float2 offset = float2(cos(angle), sin(angle)) * step * float(i + 1);
+  //     float2 sampleUV = uv + offset / resolution;
+
+  //     // Sample the image at offset position
+  //     half4 sampleColor = image.eval(sampleUV * resolution);
+
+  //     // Accumulate glow based on alpha of sampled pixels
+  //     glowAlpha += sampleColor.a * (1.0 - float(i) / float(SAMPLES));
+  //   }
+
+  //   glowAlpha = glowAlpha / float(SAMPLES) * glowIntensity;
+
+  //   // Blend original color with glow
+  //   float3 finalColor = originalColor.rgb + glowColor * glowAlpha;
+
+  //   return half4(
+  //     clamp(finalColor.r, 0.0, 1.0),
+  //     clamp(finalColor.g, 0.0, 1.0),
+  //     clamp(finalColor.b, 0.0, 1.0),
+  //     max(originalColor.a, glowAlpha)
+  //   );
+  // }
+  // // `);
+  //     if (!source) {
+  //       console.error("Failed to create glow effect");
+  //       return null;
+  //     }
+  //     return source;
+  //   }, []);
 
   const { top, bottom } = useSafeAreaInsets();
 
   // Fetch user's posts from the past week
   const fetchUserPosts = async () => {
-    if (!user?.id) return;
+    if (!currentProfile?.id || !user?.id) return;
 
     try {
       setLoadingPosts(true);
@@ -148,17 +170,25 @@ half4 main(float2 xy) {
     }
   };
 
+  // // Fetch profile if user exists but profile is missing
+  // useEffect(() => {
+  //   if (user?.id && !currentProfile) {
+  //     console.log("Profile missing, fetching...");
+  //     refreshProfile();
+  //   }
+  // }, [user?.id, currentProfile, refreshProfile]);
+
   // Sync streak and hype from Supabase when profile loads
   useEffect(() => {
-    if (profile?.streak !== undefined) {
-      syncStreakWithSupabase(profile.streak);
+    if (currentProfile?.streak !== undefined) {
+      syncStreakWithSupabase(currentProfile.streak);
     }
-    if (profile?.hype !== undefined) {
-      syncHypeWithSupabase(profile.hype);
+    if (currentProfile?.hype !== undefined) {
+      syncHypeWithSupabase(currentProfile.hype);
     }
   }, [
-    profile?.streak,
-    profile?.hype,
+    currentProfile?.streak,
+    currentProfile?.hype,
     syncStreakWithSupabase,
     syncHypeWithSupabase,
   ]);
@@ -166,13 +196,13 @@ half4 main(float2 xy) {
   // Fetch user posts when component mounts or user changes
   useEffect(() => {
     fetchUserPosts();
-  }, [user?.id]);
+  }, [currentProfile?.id]);
 
   // Set up realtime subscription for profile updates (hype, streak, etc.)
   useEffect(() => {
-    if (!user?.id) return;
+    if (!currentProfile?.id) return;
 
-    const channelName = `profile_updates_${user.id}_${Date.now()}`;
+    const channelName = `profile_updates_${currentProfile.id}_${Date.now()}`;
     const channel = supabase
       .channel(channelName)
       .on(
@@ -181,15 +211,15 @@ half4 main(float2 xy) {
           event: "UPDATE",
           schema: "public",
           table: "profiles",
-          filter: `id=eq.${user.id}`,
+          filter: `id=eq.${currentProfile.id}`,
         },
         (payload) => {
           const updatedProfile = payload.new as typeof profile;
           console.log("Profile updated via realtime:", updatedProfile);
 
-          // Refresh profile to get latest data
-          refreshProfile();
-        }
+          // Refresh profile to get latest data (don't redirect)
+          refreshProfile({ replaceToTabs: false });
+        },
       )
       .subscribe((status) => {
         if (status === "SUBSCRIBED") {
@@ -202,7 +232,7 @@ half4 main(float2 xy) {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [user?.id, refreshProfile]);
+  }, [currentProfile?.id, refreshProfile]);
 
   const pickImage = async () => {
     try {
@@ -212,27 +242,36 @@ half4 main(float2 xy) {
       if (status !== "granted") {
         Alert.alert(
           "Permission needed",
-          "Please grant permission to access your photos"
+          "Please grant permission to access your photos",
         );
         return;
       }
 
       // Launch image picker
       const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        allowsEditing: true,
-        aspect: [1, 1],
-        quality: 0.8,
+        mediaTypes: ["images"],
+        allowsEditing: false,
+        quality: 0.9,
       });
 
       if (!result.canceled && result.assets[0]) {
         setProfileImageUri(result.assets[0].uri);
-        await uploadImage(result.assets[0].uri);
+        setShowImageEditor(true);
       }
     } catch (error) {
       console.error("Error picking image:", error);
       Alert.alert("Error", "Failed to pick image");
     }
+  };
+
+  const handleImageEditorCancel = () => {
+    setShowImageEditor(false);
+    setProfileImageUri(null);
+  };
+
+  const handleImageEditorConfirm = async (editedUri: string) => {
+    setShowImageEditor(false);
+    await uploadImage(editedUri);
   };
 
   const uploadImage = async (uri: string): Promise<void> => {
@@ -263,7 +302,7 @@ half4 main(float2 xy) {
       // Convert Uint8Array to ArrayBuffer
       const arrayBuffer = bytes.buffer.slice(
         bytes.byteOffset,
-        bytes.byteOffset + bytes.byteLength
+        bytes.byteOffset + bytes.byteLength,
       );
 
       // Upload to Supabase storage
@@ -298,8 +337,8 @@ half4 main(float2 xy) {
         throw updateError;
       }
 
-      // Refresh profile in context
-      await refreshProfile();
+      // Refresh profile in context (don't redirect - user is already on profile)
+      await refreshProfile({ replaceToTabs: false });
       setProfileImageUri(null);
       Alert.alert("Success", "Profile picture updated!");
     } catch (error) {
@@ -332,7 +371,7 @@ half4 main(float2 xy) {
       if (status !== "granted") {
         Alert.alert(
           "Permission denied",
-          "Please grant permission to save images to your gallery"
+          "Please grant permission to save images to your gallery",
         );
         return;
       }
@@ -343,7 +382,7 @@ half4 main(float2 xy) {
       }temp_post_${Date.now()}.jpg`;
       const downloadResult = await FileSystem.downloadAsync(
         selectedPostImage,
-        tempImageUri
+        tempImageUri,
       );
 
       if (!downloadResult.uri) {
@@ -355,7 +394,7 @@ half4 main(float2 xy) {
         downloadResult.uri,
         {
           encoding: FileSystem.EncodingType.Base64,
-        }
+        },
       );
 
       // Load images into Skia using Data.fromBase64
@@ -427,61 +466,61 @@ half4 main(float2 xy) {
     }
   };
 
-  const handleDeleteAllPosts = async () => {
-    Alert.alert(
-      "Delete All Posts",
-      "Are you sure you want to delete ALL posts? This action cannot be undone.",
-      [
-        {
-          text: "Cancel",
-          style: "cancel",
-        },
-        {
-          text: "Delete All",
-          style: "destructive",
-          onPress: async () => {
-            try {
-              setDeletingAllPosts(true);
-              const { data, error } = await supabase.functions.invoke(
-                "delete-week-posts",
-                {
-                  body: JSON.stringify({}),
-                }
-              );
+  // const handleDeleteAllPosts = async () => {
+  //   Alert.alert(
+  //     "Delete All Posts",
+  //     "Are you sure you want to delete ALL posts? This action cannot be undone.",
+  //     [
+  //       {
+  //         text: "Cancel",
+  //         style: "cancel",
+  //       },
+  //       {
+  //         text: "Delete All",
+  //         style: "destructive",
+  //         onPress: async () => {
+  //           try {
+  //             setDeletingAllPosts(true);
+  //             const { data, error } = await supabase.functions.invoke(
+  //               "delete-week-posts",
+  //               {
+  //                 body: JSON.stringify({}),
+  //               }
+  //             );
 
-              if (error) {
-                console.error("Error deleting all posts:", error);
-                throw error;
-              }
+  //             if (error) {
+  //               console.error("Error deleting all posts:", error);
+  //               throw error;
+  //             }
 
-              console.log("Delete all posts result:", data);
-              Alert.alert(
-                "Success",
-                data?.message || `Deleted ${data?.deletedPosts || 0} posts`,
-                [
-                  {
-                    text: "OK",
-                    onPress: () => {
-                      // Refresh posts after deletion
-                      fetchUserPosts();
-                    },
-                  },
-                ]
-              );
-            } catch (error) {
-              console.error("Error deleting all posts:", error);
-              Alert.alert(
-                "Error",
-                "Failed to delete all posts. Please try again."
-              );
-            } finally {
-              setDeletingAllPosts(false);
-            }
-          },
-        },
-      ]
-    );
-  };
+  //             console.log("Delete all posts result:", data);
+  //             Alert.alert(
+  //               "Success",
+  //               data?.message || `Deleted ${data?.deletedPosts || 0} posts`,
+  //               [
+  //                 {
+  //                   text: "OK",
+  //                   onPress: () => {
+  //                     // Refresh posts after deletion
+  //                     fetchUserPosts();
+  //                   },
+  //                 },
+  //               ]
+  //             );
+  //           } catch (error) {
+  //             console.error("Error deleting all posts:", error);
+  //             Alert.alert(
+  //               "Error",
+  //               "Failed to delete all posts. Please try again."
+  //             );
+  //           } finally {
+  //             setDeletingAllPosts(false);
+  //           }
+  //         },
+  //       },
+  //     ]
+  //   );
+  // };
 
   const handleDeleteAccount = async () => {
     setDeleting(true);
@@ -495,7 +534,7 @@ half4 main(float2 xy) {
     } catch (error) {
       Alert.alert(
         "Error",
-        "Failed to delete account. Please try again or contact support."
+        "Failed to delete account. Please try again or contact support.",
       );
     } finally {
       setDeleting(false);
@@ -509,10 +548,55 @@ half4 main(float2 xy) {
     }
   };
 
-  const displayName =
-    profile?.full_name || profile?.username || user?.email || "User";
+  const displayName = currentProfile?.full_name || "User";
 
-  if (!profile) return null;
+  const handleEditName = () => {
+    setEditingName(currentProfile?.full_name || "");
+    setShowEditNameModal(true);
+  };
+
+  const handleSaveName = async () => {
+    if (!user?.id) {
+      Alert.alert("Error", "User not found");
+      return;
+    }
+
+    const trimmedName = editingName.trim();
+    if (!trimmedName) {
+      Alert.alert("Error", "Name cannot be empty");
+      return;
+    }
+
+    try {
+      setUpdatingName(true);
+
+      // Update in Supabase
+      const { error: updateError } = await supabase
+        .from("profiles")
+        .update({
+          full_name: trimmedName,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", user.id);
+
+      if (updateError) {
+        console.error("Error updating name:", updateError);
+        throw updateError;
+      }
+
+      // Refresh profile in context (don't redirect - user is on profile)
+      await refreshProfile({ replaceToTabs: false });
+
+      setShowEditNameModal(false);
+      setEditingName("");
+      Alert.alert("Success", "Profile name updated!");
+    } catch (error) {
+      console.error("Error updating name:", error);
+      Alert.alert("Error", "Failed to update profile name");
+    } finally {
+      setUpdatingName(false);
+    }
+  };
 
   const renderPostItem = ({ item }: { item: (typeof userPosts)[0] }) => (
     <View
@@ -567,18 +651,34 @@ half4 main(float2 xy) {
   );
 
   const ListHeaderComponent = () => (
-    <View className="items-center mt-8 mb-8">
+    <View className="items-center mt-8 mb-6">
       <TouchableOpacity
         onPress={pickImage}
+        onLongPress={() => {
+          const uri = avatarUrl || currentProfile?.avatar_url;
+          if (uri) {
+            router.push({
+              pathname: "/post-image",
+              params: { image: uri },
+            });
+          }
+        }}
         disabled={uploading}
         className="relative"
         activeOpacity={0.8}
       >
-        <View className="w-32 h-32 rounded-full bg-secondary items-center justify-center overflow-hidden border-2 border-white/20">
-          {profile.avatar_url ? (
+        <View className="w-44 h-44 rounded-full bg-secondary items-center justify-center overflow-hidden border-2 border-white/20">
+          {profileImageUri ? (
             <Image
-              source={{ uri: profile?.avatar_url }}
-              style={{ width: 128, height: 128 }}
+              source={{ uri: profileImageUri }}
+              style={{ width: 178, height: 178 }}
+              className="w-full h-full"
+              resizeMode="cover"
+            />
+          ) : currentProfile?.avatar_url ? (
+            <Image
+              source={{ uri: currentProfile.avatar_url }}
+              style={{ width: 178, height: 178 }}
               className="w-full h-full"
               resizeMode="cover"
             />
@@ -591,37 +691,71 @@ half4 main(float2 xy) {
           ) : (
             <View className="items-center justify-center">
               <Text className="text-white text-4xl">
-                {displayName.charAt(0).toUpperCase()}
+                {currentProfile?.full_name?.charAt(0).toUpperCase() || "?"}
               </Text>
             </View>
           )}
         </View>
         {/* Edit Icon Overlay */}
-        <View className="absolute bottom-0 right-0 w-10 h-10 bg-white rounded-full items-center justify-center border-2 border-black">
-          <Ionicons name="camera" size={20} color="#000" />
+        <View className="absolute bottom-0 right-0 w-12 h-12 bg-white rounded-full items-center justify-center border-2 border-black">
+          <Ionicons name="camera" size={22} color="#000" />
         </View>
       </TouchableOpacity>
       {uploading && (
         <Text className="text-gray-400 text-sm mt-2">Uploading...</Text>
       )}
-      <Text className="text-white text-2xl font-bold mt-4">{displayName}</Text>
-      <View className="flex-row gap-3 mt-4">
-        {profile?.streak !== undefined && profile.streak > 0 && (
+      <View className="w-full gap-2">
+        <View className="w-full flex-row items-center justify-center gap-2 mt-4">
+          <Text className="text-white text-3xl font-bold">{displayName}</Text>
+          <TouchableOpacity
+            onPress={handleEditName}
+            className="p-1"
+            activeOpacity={0.7}
+          >
+            <Feather name="edit" size={20} color="white" />
+          </TouchableOpacity>
+        </View>
+        {/* <View className="w-full  flex-row items-center gap-0">
+          <TouchableOpacity
+            onPress={handleEditName}
+            className="p-1"
+            activeOpacity={0.7}
+          >
+            <MaterialIcons name="edit" size={18} color="#acacac" />
+          </TouchableOpacity>
+          <Text className="text-[#acacac] text-sm">
+            Drop a line that sums you up...
+          </Text>
+        </View> */}
+      </View>
+      <View className="flex-row gap-3 mt-0">
+        {/* {profile?.streak !== undefined && profile.streak > 0 && (
           <View className="flex-row bg-secondary px-4 py-2 border border-white/10 rounded-full items-center">
             <Ionicons name="flame" size={20} color="#0052c8" />
             <Text className="text-white text-lg font-semibold ml-2">
               {profile.streak}
             </Text>
           </View>
-        )}
-        {profile?.hype !== undefined && profile.hype > 0 && (
-          <View className="flex-row bg-secondary px-4 py-2 border border-white/10 rounded-full items-center">
-            <Ionicons name="flash" size={20} color="#FFD700" />
-            <Text className="text-white text-lg font-semibold ml-2">
-              {profile.hype} hype
-            </Text>
-          </View>
-        )}
+        )} */}
+        {/* {profile?.hype !== undefined && profile.hype > 0 && ( */}
+        <View className="flex-row items-center w-full justify-between">
+          <Text className="text-white text-xl font-semibold">Your moments</Text>
+          <TouchableOpacity
+            activeOpacity={0.8}
+            onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+              setShowBoostedModal(true);
+            }}
+          >
+            <View className="flex-row bg-secondary px-4 py-2 border border-white/10 rounded-full items-center gap-2 justify-center">
+              <Text className="text-white text-3xl font-semibold">📸</Text>
+              <Text className="text-white text-lg pt-1 font-semibold">
+                {currentProfile?.hype ?? 0}
+              </Text>
+            </View>
+          </TouchableOpacity>
+        </View>
+        {/* )} */}
       </View>
     </View>
   );
@@ -641,7 +775,7 @@ half4 main(float2 xy) {
           paddingBottom: footerBottomPadding,
         }}
       >
-        <TouchableOpacity
+        {/* <TouchableOpacity
           onPress={handleDeleteAllPosts}
           disabled={deletingAllPosts}
           className="bg-red-600/20 py-3 border-2 border-red-600/50 rounded-lg flex-row items-center justify-center gap-2"
@@ -656,7 +790,7 @@ half4 main(float2 xy) {
               Delete All Posts
             </Text>
           )}
-        </TouchableOpacity>
+        </TouchableOpacity> */}
 
         <TouchableOpacity
           onPress={handleSignOut}
@@ -675,6 +809,9 @@ half4 main(float2 xy) {
             Delete Account
           </Text>
         </TouchableOpacity>
+        <Text className="text-white/50 text-center text-sm">
+          v{Application.nativeApplicationVersion}
+        </Text>
       </View>
     );
   };
@@ -688,12 +825,10 @@ half4 main(float2 xy) {
         {loadingPosts ? (
           <Text className="text-white/60">Loading posts...</Text>
         ) : (
-          <View className="items-center justify-center">
-            <Text className="text-white text-center text-xl font-semibold mb-2">
-              No moments captured yet
-            </Text>
-            <Text className="text-white/80 text-center text-sm">
-              You can only see and save posts that are a week old or less.
+          <View className="items-center justify-center gap-2">
+            <Ionicons name="image-outline" size={45} color="white" />
+            <Text className="text-white text-center font-semibold mb-2">
+              Nothing captured yet
             </Text>
           </View>
         )}
@@ -701,6 +836,21 @@ half4 main(float2 xy) {
     );
   };
 
+  // Show loading state only during initial auth loading
+  // Once auth is loaded, always render the profile screen (even if profile is null)
+  if (authLoading) {
+    return (
+      <Container>
+        <View className="flex-1 items-center justify-center">
+          <ActivityIndicator size="large" color="#fff" />
+          <Text className="text-white/60 mt-4">Loading...</Text>
+        </View>
+      </Container>
+    );
+  }
+
+  // Always render the profile screen - user should exist if we're here
+  // Handle null profile gracefully in the UI
   return (
     <Container>
       <FlatList
@@ -727,7 +877,6 @@ half4 main(float2 xy) {
         showsVerticalScrollIndicator={false}
       />
 
-      {/* Save Post Confirmation Modal */}
       <Modal
         visible={showSaveModal}
         transparent
@@ -740,13 +889,10 @@ half4 main(float2 xy) {
         <View className="flex-1 bg-black/70 items-center justify-center p-6">
           <View className="bg-secondary items-center justify-center rounded-2xl p-6 w-full max-w-sm">
             <Ionicons name="information-circle" size={48} color="white" />
-            <Text className="text-white text-2xl font-bold mt-4 mb-2 text-center">
+            <Text className="text-white text-2xl  font-bold mt-4 mb-6 text-center">
               Save to Gallery
             </Text>
-            <Text className="text-white/70 text-center text-base mb-6">
-              Each post expires after 7 days. Make sure to save your favorite
-              moments to your gallery before they disappear!
-            </Text>
+
             <View className="w-full gap-3">
               <TouchableOpacity
                 onPress={confirmSavePost}
@@ -775,8 +921,36 @@ half4 main(float2 xy) {
           </View>
         </View>
       </Modal>
-
-      {/* Delete Account Confirmation Modal */}
+      {(currentProfile?.hype ?? 0) > 0 && (
+        <Modal
+          visible={showBoostedModal}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setShowBoostedModal(false)}
+        >
+          <View className="flex-1 bg-black/70 items-center justify-center p-6">
+            <View className="bg-secondary items-center justify-center rounded-2xl p-6 w-full max-w-sm">
+              <Text className="text-white text-6xl font-semibold">📸</Text>
+              <Text className="text-white text-2xl font-bold mt-4 mb-2 text-center">
+                Your boosts
+              </Text>
+              <Text className="text-white/80 text-base mb-6 text-center">
+                You have been boosted {currentProfile?.hype ?? 0} times. Keep it
+                up!
+              </Text>
+              <TouchableOpacity
+                onPress={() => setShowBoostedModal(false)}
+                className="bg-primary p-4 rounded-lg items-center w-full"
+                activeOpacity={0.8}
+              >
+                <Text className="text-white font-semibold text-base">
+                  Let's go
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </Modal>
+      )}
       <Modal
         visible={showDeleteModal}
         transparent
@@ -816,6 +990,69 @@ half4 main(float2 xy) {
           </View>
         </View>
       </Modal>
+
+      <Modal
+        visible={showEditNameModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          setShowEditNameModal(false);
+          setEditingName("");
+        }}
+      >
+        <View className="flex-1 bg-black/70 items-center justify-center p-6">
+          <View className="bg-secondary items-center justify-center rounded-2xl p-6 w-full max-w-sm">
+            <Text className="text-white text-2xl font-bold mb-2">
+              Edit Profile Name
+            </Text>
+            <TextInput
+              value={editingName}
+              onChangeText={setEditingName}
+              placeholder="Enter your name"
+              placeholderTextColor="#8a8a8a"
+              selectionColor={"white"}
+              className="bg-background text-white p-4 rounded-lg border border-white/20 w-full mt-4 mb-6"
+              autoCapitalize="words"
+              autoCorrect={false}
+              autoFocus
+            />
+            <View className="w-full gap-3">
+              <TouchableOpacity
+                onPress={handleSaveName}
+                disabled={updatingName || !editingName.trim()}
+                className={`bg-primary p-4 rounded-lg items-center ${
+                  updatingName || !editingName.trim() ? "opacity-50" : ""
+                }`}
+                activeOpacity={0.7}
+              >
+                {updatingName ? (
+                  <Text className="text-white font-semibold">Updating...</Text>
+                ) : (
+                  <Text className="text-white font-semibold">Save</Text>
+                )}
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => {
+                  setShowEditNameModal(false);
+                  setEditingName("");
+                }}
+                disabled={updatingName}
+                className="bg-background p-4 rounded-lg items-center"
+                activeOpacity={0.7}
+              >
+                <Text className="text-white font-semibold">Cancel</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <ImageEditorModal
+        visible={showImageEditor}
+        imageUri={profileImageUri}
+        onCancel={handleImageEditorCancel}
+        onConfirm={handleImageEditorConfirm}
+      />
     </Container>
   );
 }

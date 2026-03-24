@@ -140,39 +140,39 @@ Deno.serve(async (req) => {
     }
 
     // Send notification to post owner if they have an expo token
-    if (postOwnerProfile.expo_token) {
-      const displayName = postOwnerProfile.username || postOwnerProfile.full_name || 'Someone';
-      const notificationMessage = {
-        to: postOwnerProfile.expo_token,
-        sound: 'default',
-        title: 'Moments',
-        body: `${displayName} hyped your moment! 📸`,
-        data: {
-          route: '/(tabs)',
-          type: 'hype',
-          postId: postId.toString(),
-        },
-      };
+    // if (postOwnerProfile.expo_token) {
+    //   const displayName = postOwnerProfile.username || postOwnerProfile.full_name || 'Someone';
+    //   const notificationMessage = {
+    //     to: postOwnerProfile.expo_token,
+    //     sound: 'default',
+    //     title: 'Moments',
+    //     body: `${displayName} boosted your moment! 📸`,
+    //     data: {
+    //       route: '/(tabs)',
+    //       type: 'hype',
+    //       postId: postId.toString(),
+    //     },
+    //   };
 
-      try {
-        const notificationResponse = await fetch('https://exp.host/--/api/v2/push/send', {
-          method: 'POST',
-          headers: {
-            Accept: 'application/json',
-            'Accept-encoding': 'gzip, deflate',
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(notificationMessage),
-        });
+    //   try {
+    //     const notificationResponse = await fetch('https://exp.host/--/api/v2/push/send', {
+    //       method: 'POST',
+    //       headers: {
+    //         Accept: 'application/json',
+    //         'Accept-encoding': 'gzip, deflate',
+    //         'Content-Type': 'application/json',
+    //       },
+    //       body: JSON.stringify(notificationMessage),
+    //     });
 
-        if (!notificationResponse.ok) {
-          console.error('Failed to send notification:', notificationResponse.statusText);
-        }
-      } catch (notificationError) {
-        console.error('Error sending notification:', notificationError);
-        // Don't fail the hype if notification fails
-      }
-    }
+    //     if (!notificationResponse.ok) {
+    //       console.error('Failed to send notification:', notificationResponse.statusText);
+    //     }
+    //   } catch (notificationError) {
+    //     console.error('Error sending notification:', notificationError);
+    //     // Don't fail the hype if notification fails
+    //   }
+    // }
 
     return new Response(
       JSON.stringify({

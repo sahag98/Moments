@@ -1,5 +1,6 @@
 import { Container } from "@/components/Container";
 import { useAuth } from "@/contexts/AuthContext";
+import { CheckReview } from "@/hooks/useShowReview";
 import { supabase } from "@/lib/supabase";
 import { useImageStore } from "@/store/imageStore";
 import { usePostStore } from "@/store/postStore";
@@ -46,7 +47,14 @@ export default function PostPreviewScreen() {
   const { capturedImageUri, clearCapturedImageUri } = useImageStore();
   const { user, profile, fetchAllProfiles, refreshProfile } = useAuth();
   const { addPost } = useStreakStore();
-  const { checkIfCanPost, recordPost } = usePostStore();
+
+  const {
+    checkIfCanPost,
+    isShowingFirstReview,
+    recordPost,
+    postCount,
+    hasShownFirstReview,
+  } = usePostStore();
   const canvasRef = useCanvasRef();
   const pixelDensity = PixelRatio.get();
   const [isPosting, setIsPosting] = useState(false);
@@ -217,7 +225,7 @@ half4 main(float2 xy) {
     if (!canPost) {
       Alert.alert(
         "Daily Limit Reached",
-        "You can only post once per day. Come back tomorrow to share another moment!"
+        "You can only post once per day. Come back tomorrow for more!",
       );
       return;
     }
@@ -332,7 +340,7 @@ half4 main(float2 xy) {
       try {
         const allProfiles = await fetchAllProfiles();
         const profilesWithTokens = allProfiles.filter(
-          (p) => p.expo_token && p.id !== user.id
+          (p) => p.expo_token && p.id !== user.id,
         );
 
         const displayName =
@@ -363,13 +371,13 @@ half4 main(float2 xy) {
                   "Content-Type": "application/json",
                 },
                 body: JSON.stringify(message),
-              }
+              },
             );
 
             if (!response.ok) {
               console.error(
                 `Failed to send notification to ${p.id}:`,
-                response.statusText
+                response.statusText,
               );
             }
           } catch (error) {
@@ -398,6 +406,15 @@ half4 main(float2 xy) {
       Alert.alert("Error", "Failed to post image");
     } finally {
       setIsPosting(false);
+
+      if (postCount % 2 === 0 && hasShownFirstReview === false) {
+        CheckReview();
+        isShowingFirstReview();
+      }
+
+      if (postCount % 10 === 0 && hasShownFirstReview === true) {
+        CheckReview();
+      }
     }
   };
 

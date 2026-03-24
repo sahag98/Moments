@@ -14,9 +14,15 @@ export default function TabLayout() {
   const { profile } = useAuth();
   const avatarUrl = getStorageUrl(profile?.avatar_url, "avatars");
 
+  console.log("on tabs layout: profile", profile);
+
   if (!profile) {
-    return <Redirect href="/auth" />;
+    console.log("no profile");
   }
+
+  // if (!profile) {
+  //   return <Redirect href="/auth" />;
+  // }
 
   if (profile && !profile.username) {
     return <Redirect href="/onboarding" />;
@@ -25,6 +31,7 @@ export default function TabLayout() {
   return (
     // <ProtectedRoute>
     <Tabs
+      detachInactiveScreens={false}
       screenOptions={{
         animation: "shift",
         tabBarActiveTintColor: Colors["dark"].tint,
