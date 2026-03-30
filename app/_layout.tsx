@@ -1,6 +1,8 @@
 import { OfflineScreen } from "@/components/OfflineScreen";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { NetworkProvider, useNetwork } from "@/contexts/NetworkContext";
+import { createAppQueryClient } from "@/lib/queryClient";
+import { QueryClientProvider } from "@tanstack/react-query";
 import { DarkTheme, ThemeProvider } from "@react-navigation/native";
 import * as Notifications from "expo-notifications";
 import { Stack } from "expo-router";
@@ -124,11 +126,15 @@ function AppContent() {
 }
 
 export default function RootLayout() {
+  const [queryClient] = useState(() => createAppQueryClient());
+
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
-      <NetworkProvider>
-        <AppContent />
-      </NetworkProvider>
+      <QueryClientProvider client={queryClient}>
+        <NetworkProvider>
+          <AppContent />
+        </NetworkProvider>
+      </QueryClientProvider>
     </GestureHandlerRootView>
   );
 }

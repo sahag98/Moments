@@ -46,10 +46,10 @@ import {
   useAnimatedReaction,
   useSharedValue,
 } from "react-native-reanimated";
-// import { VolumeManager } from "react-native-volume-manager";
+import { VolumeManager } from "react-native-volume-manager";
 
-// // Disable the native volume toast globally (iOS, Android)
-// VolumeManager.showNativeVolumeUI({ enabled: false });
+// Disable the native volume toast globally (iOS, Android)
+VolumeManager.showNativeVolumeUI({ enabled: false });
 
 // Listen to volume changes
 
@@ -127,18 +127,18 @@ export default function CameraScreen() {
     currentZoomRef.current = currentZoom;
   }, [currentZoom]);
 
-  // useEffect(() => {
-  //   if (!isCameraReady) return;
+  useEffect(() => {
+    if (!isCameraReady) return;
 
-  //   const volumeListener = VolumeManager.addVolumeListener((result) => {
-  //     console.log("volume changed", result);
-  //     takePicture();
-  //   });
+    const volumeListener = VolumeManager.addVolumeListener((result) => {
+      console.log("volume changed", result);
+      takePicture();
+    });
 
-  //   return () => {
-  //     volumeListener.remove();
-  //   };
-  // }, [isCameraReady]);
+    return () => {
+      volumeListener.remove();
+    };
+  }, [isCameraReady]);
 
   // Clear captured image when screen comes into focus (e.g., returning from modal)
   useFocusEffect(

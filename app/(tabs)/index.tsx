@@ -6,6 +6,15 @@ import { UpdateModal } from "@/components/update-modal";
 import { useAuth } from "@/contexts/AuthContext";
 import { Tables } from "@/database.types";
 import { BIBLE_VERSES } from "@/lib/bible-verses";
+import {
+  FEED_PAGE_SIZE,
+  FeedPost,
+  FeedQueryData,
+  feedPostsQueryKey,
+  fetchExpoTokenForProfile,
+  fetchFeedData,
+  fetchFeedPostById,
+} from "@/lib/queries/feed";
 import { supabase } from "@/lib/supabase";
 import { cn } from "@/lib/utils";
 import { useHypeStore } from "@/store/hypeStore";
@@ -17,7 +26,14 @@ import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
 import { router, useNavigation } from "expo-router";
 import LottieView from "lottie-react-native";
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -36,9 +52,8 @@ import Animated, {
   useSharedValue,
 } from "react-native-reanimated";
 
-type Post = Tables<"posts"> & {
-  profiles: Tables<"profiles"> | null;
-};
+/** Home feed row shape (narrow select + joined profile). */
+type Post = FeedPost;
 
 type BibleVerse = {
   id: string;
@@ -61,9 +76,25 @@ let verseIdSeq = 0;
 const HAS_VIEWED_FULL_SCREEN_KEY = "@has_viewed_full_screen_post";
 const FEEDBACK_BANNER_DISMISSED_KEY = "@feedback_banner_dismissed_v1";
 
-// Post limit configuration - change this for testing vs production
-// Set to 3 for easy testing, 20 for production
-const POST_LIMIT = __DEV__ ? 20 : 20; // Automatically uses 3 in dev, 20 in production
+function applyOptimisticHype(
+  posts: FeedPost[],
+  optimistic: Map<number, { profileId: string; increment: number }>,
+): FeedPost[] {
+  if (optimistic.size === 0) return posts;
+  return posts.map((post) => {
+    const o = optimistic.get(post.id);
+    if (!o || !post.profiles || o.profileId !== post.profiles.id) {
+      return post;
+    }
+    return {
+      ...post,
+      profiles: {
+        ...post.profiles,
+        hype: (post.profiles.hype || 0) + o.increment,
+      },
+    };
+  });
+}
 
 // Animated Verse Component
 const AnimatedVerseItem = ({
@@ -373,10 +404,13 @@ const AnimatedPostItem = ({
                   await refreshProfile();
                 }
 
-                // Send push notification to post owner only on success
-                if (item.profiles?.expo_token) {
+                // Send push notification to post owner only on success (token fetched on demand)
+                const ownerExpoToken = await fetchExpoTokenForProfile(
+                  postOwnerId,
+                );
+                if (ownerExpoToken) {
                   const message = {
-                    to: item.profiles?.expo_token,
+                    to: ownerExpoToken,
                     sound: "default",
                     title: "Moments",
                     body: `${currentUser?.username} boosted your moment! 📸`,
@@ -581,19 +615,16 @@ const getRandomVerse = (): BibleVerse => {
 
 export default function HomeScreen() {
   const navigation = useNavigation();
-  const { profile, user, fetchAllProfiles, refreshProfile } = useAuth();
+  const { profile, user, refreshProfile } = useAuth();
+  const queryClient = useQueryClient();
   const {
     clearHypedPosts,
     hasUsedDailyHype,
     incrementDailyHype,
     resetDailyHypeIfNeeded,
   } = useHypeStore();
-  const [posts, setPosts] = useState<Post[]>([]);
-  const [feedItems, setFeedItems] = useState<FeedItem[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
+
   const [hasNewPosts, setHasNewPosts] = useState(false);
-  const [lastPostId, setLastPostId] = useState<number | null>(null);
   const [showDailyLimitModal, setShowDailyLimitModal] = useState(false);
   const [hasViewedFullScreen, setHasViewedFullScreen] = useState(true); // start true to avoid flash; set false after load
   const [showEulaModal, setShowEulaModal] = useState(false);
@@ -614,21 +645,88 @@ export default function HomeScreen() {
     Map<number, { profileId: string; increment: number }>
   >(new Map());
 
+  const feedKey = feedPostsQueryKey(user?.id);
+  const {
+    data: feedQueryData,
+    isPending,
+    isFetching,
+    refetch,
+    error: feedError,
+  } = useQuery({
+    queryKey: feedKey,
+    queryFn: () => fetchFeedData(user?.id),
+  });
+
+  useEffect(() => {
+    if (feedError) console.error("Error fetching posts:", feedError);
+  }, [feedError]);
+
+  const basePosts = useMemo(
+    () => feedQueryData?.posts ?? [],
+    [feedQueryData],
+  );
+
+  /** Only subscribe to profile rows for authors in the current feed (+ self). */
+  const profileRealtimeFilterIds = useMemo(() => {
+    const ids = new Set<string>();
+    if (profile?.id) ids.add(profile.id);
+    for (const p of basePosts) {
+      if (p.user_id) ids.add(p.user_id);
+    }
+    return Array.from(ids).sort();
+  }, [basePosts, profile?.id]);
+
+  const profileRealtimeFilterKey = profileRealtimeFilterIds.join(",");
+
+  const posts = useMemo(
+    () => applyOptimisticHype(basePosts, optimisticHypeUpdates),
+    [basePosts, optimisticHypeUpdates],
+  );
+
+  const feedItems = useMemo((): FeedItem[] => {
+    if (posts.length === 0) return [];
+    const interleavedItems: FeedItem[] = [];
+    posts.forEach((post, index) => {
+      interleavedItems.push(post);
+      if ((index + 1) % 4 === 0 && index < posts.length - 1) {
+        interleavedItems.push(getRandomVerse());
+      }
+    });
+    interleavedItems.push({ id: "end-of-feed", type: "endOfFeed" });
+    return interleavedItems;
+  }, [posts]);
+
+  useEffect(() => {
+    postsRef.current = posts;
+  }, [posts]);
+
+  useEffect(() => {
+    blockedUserIdsRef.current = feedQueryData?.blockedUserIds ?? [];
+  }, [feedQueryData?.blockedUserIds]);
+
+  useEffect(() => {
+    if (basePosts.length > 0) {
+      lastPostIdRef.current = basePosts[0].id;
+    } else {
+      lastPostIdRef.current = null;
+    }
+  }, [basePosts]);
+
+  const refreshing = isFetching && !isPending;
+
   // Animation for scroll-based scaling
   const scrollY = useSharedValue(0);
 
-  // Handle optimistic hype updates
+  // Handle optimistic hype updates (display merges via applyOptimisticHype)
   const handleOptimisticHypeUpdate = useCallback(
     (postId: number, profileId: string, increment: number) => {
       setOptimisticHypeUpdates((prev) => {
         const newMap = new Map(prev);
         if (increment === 0) {
-          // Remove optimistic update (server confirmed)
           newMap.delete(postId);
         } else {
           const existing = newMap.get(postId);
           if (existing) {
-            // Update existing optimistic update
             const newIncrement = existing.increment + increment;
             if (newIncrement === 0) {
               newMap.delete(postId);
@@ -636,126 +734,14 @@ export default function HomeScreen() {
               newMap.set(postId, { profileId, increment: newIncrement });
             }
           } else if (increment > 0) {
-            // Add new optimistic update
             newMap.set(postId, { profileId, increment });
           }
         }
         return newMap;
       });
-
-      // Also update the posts and feedItems state optimistically
-      if (increment !== 0) {
-        setPosts((currentPosts) => {
-          return currentPosts.map((post) => {
-            if (post.id === postId && post.profiles?.id === profileId) {
-              return {
-                ...post,
-                profiles: {
-                  ...post.profiles,
-                  hype: (post.profiles.hype || 0) + increment,
-                },
-              };
-            }
-            return post;
-          });
-        });
-
-        setFeedItems((currentItems) => {
-          return currentItems.map((item) => {
-            if (
-              "type" in item === false &&
-              (item as Post).id === postId &&
-              (item as Post).profiles?.id === profileId
-            ) {
-              return {
-                ...(item as Post),
-                profiles: {
-                  ...(item as Post).profiles!,
-                  hype: ((item as Post).profiles?.hype || 0) + increment,
-                },
-              } as Post;
-            }
-            return item;
-          });
-        });
-      }
     },
     [],
   );
-
-  // Test function to simulate sending notifications without posting
-  // const testNotifications = async () => {
-  //   if (!user || !profile) {
-  //     Alert.alert("Error", "User not authenticated");
-  //     return;
-  //   }
-
-  //   try {
-  //     Alert.alert("Testing", "Sending test notifications...");
-
-  //     const allProfiles = await fetchAllProfiles();
-  //     const profilesWithTokens = allProfiles.filter((p) => p.expo_token);
-
-  //     console.log(
-  //       "Profiles with tokens:",
-  //       JSON.stringify(profilesWithTokens, null, 2),
-  //     );
-
-  //     const displayName = profile?.full_name || "Someone";
-
-  //     // Send notifications to all users with expo tokens
-  //     const notificationPromises = profilesWithTokens.map(async (p) => {
-  //       if (!p.expo_token) return;
-
-  //       const message = {
-  //         to: p.expo_token,
-  //         sound: "default",
-  //         title: "Moments",
-  //         body: `${displayName} posted a new moment!`,
-  //         data: {
-  //           route: "/(tabs)",
-  //         },
-  //       };
-
-  //       try {
-  //         const response = await fetch("https://exp.host/--/api/v2/push/send", {
-  //           method: "POST",
-  //           headers: {
-  //             Accept: "application/json",
-  //             "Accept-encoding": "gzip, deflate",
-  //             "Content-Type": "application/json",
-  //           },
-  //           body: JSON.stringify(message),
-  //         });
-
-  //         if (!response.ok) {
-  //           console.error(
-  //             `Failed to send notification to ${p.id}:`,
-  //             response.statusText,
-  //           );
-  //           return { success: false, userId: p.id };
-  //         }
-  //         return { success: true, userId: p.id };
-  //       } catch (error) {
-  //         console.error(`Error sending notification to ${p.id}:`, error);
-  //         return { success: false, userId: p.id, error };
-  //       }
-  //     });
-
-  //     // Wait for all notifications to complete
-  //     const results = await Promise.all(notificationPromises);
-  //     const successful = results.filter((r) => r?.success).length;
-  //     const failed = results.filter((r) => !r?.success).length;
-
-  //     Alert.alert(
-  //       "Test Complete",
-  //       `Notifications sent:\n✅ Success: ${successful}\n❌ Failed: ${failed}\n\nTotal recipients: ${profilesWithTokens.length}`,
-  //     );
-  //   } catch (error) {
-  //     console.error("Error testing notifications:", error);
-  //     Alert.alert("Error", "Failed to test notifications");
-  //   }
-  // };
 
   // Scroll handler to track scroll position
   const scrollHandler = useAnimatedScrollHandler({
@@ -763,117 +749,6 @@ export default function HomeScreen() {
       scrollY.value = event.contentOffset.y;
     },
   });
-
-  const fetchPosts = async (showRefresh = false) => {
-    try {
-      if (showRefresh) {
-        console.log("[Refresh] Setting refreshing state to true");
-        setRefreshing(true);
-      } else {
-        setLoading(true);
-      }
-
-      // Fetch list of users the current user has blocked so we can hide their posts
-      let blockedUserIds: string[] = blockedUserIdsRef.current;
-      if (user?.id && blockedUserIds.length === 0) {
-        const { data: blockedData, error: blockedError } = await supabase
-          .from("blocked_users")
-          .select("blocked_user_id")
-          .eq("blocker_id", user.id);
-
-        if (blockedError) {
-          console.error("Error fetching blocked users:", blockedError);
-        } else if (blockedData) {
-          blockedUserIds = blockedData.map((row) => row.blocked_user_id);
-          blockedUserIdsRef.current = blockedUserIds;
-        }
-      }
-
-      const { data, error } = await supabase
-        .from("posts")
-        .select(
-          `
-          *,
-          profiles (
-            id,
-            username,
-            full_name,
-            expo_token,
-            avatar_url,
-            hype
-          )
-        `,
-        )
-        .order("created_at", { ascending: false })
-        .limit(POST_LIMIT);
-
-      if (error) {
-        console.error("Error fetching posts:", error);
-        return;
-      }
-
-      if (data) {
-        let postsData = data as Post[];
-
-        // Filter out posts from blocked users on the client side
-        if (blockedUserIds.length > 0) {
-          postsData = postsData.filter(
-            (post) => !blockedUserIds.includes(post.user_id),
-          );
-        }
-        console.log(
-          `[Feed] Fetched ${postsData.length} post(s) (limit: ${POST_LIMIT})`,
-        );
-        setPosts(postsData);
-        postsRef.current = postsData; // Update ref
-
-        // Interleave Bible verses between posts (after every 4th post)
-        const interleavedItems: FeedItem[] = [];
-        postsData.forEach((post, index) => {
-          interleavedItems.push(post);
-          // Add a verse after every 4th post (index 3, 7, 11, etc.)
-          // Make sure we don't add after the last post if it's not a multiple of 4
-          if ((index + 1) % 4 === 0 && index < postsData.length - 1) {
-            interleavedItems.push(getRandomVerse());
-          }
-        });
-
-        // Add end of feed message at the end
-        interleavedItems.push({
-          id: "end-of-feed",
-          type: "endOfFeed",
-        });
-
-        console.log(
-          `[Feed] Total feed items: ${interleavedItems.length} (${
-            postsData.length
-          } posts + ${
-            interleavedItems.length - postsData.length - 1
-          } verses + 1 end message)`,
-        );
-        console.log(`[Feed] ✓ End-of-feed message added to feed`);
-
-        setFeedItems(interleavedItems);
-
-        if (data.length > 0) {
-          setLastPostId(data[0].id);
-          lastPostIdRef.current = data[0].id; // Update ref
-        }
-        setHasNewPosts(false);
-      } else {
-        setPosts([]);
-        postsRef.current = []; // Update ref
-        setFeedItems([]);
-        setHasNewPosts(false);
-      }
-    } catch (error) {
-      console.error("Error fetching posts:", error);
-    } finally {
-      setLoading(false);
-      console.log("[Refresh] Setting refreshing state to false");
-      setRefreshing(false);
-    }
-  };
 
   // Reset daily hype count if it's a new day
   useEffect(() => {
@@ -915,22 +790,15 @@ export default function HomeScreen() {
         return;
       }
 
-      // Update local state so UI stays in sync
-      setPosts((current) =>
-        current.map((p) =>
-          p.id === flagTargetPost.id ? { ...p, flagged: true } : p,
-        ),
-      );
-      setFeedItems((current) =>
-        current.map((item) => {
-          if ("type" in item) return item;
-          const postItem = item as Post;
-          if (postItem.id === flagTargetPost.id) {
-            return { ...postItem, flagged: true };
-          }
-          return item;
-        }),
-      );
+      queryClient.setQueryData<FeedQueryData>(feedKey, (prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          posts: prev.posts.map((p) =>
+            p.id === flagTargetPost.id ? { ...p, flagged: true } : p,
+          ),
+        };
+      });
 
       Alert.alert(
         "Thanks for flagging",
@@ -994,23 +862,16 @@ export default function HomeScreen() {
                 return;
               }
 
-              // Update local blocked users list so new posts are also hidden
-              blockedUserIdsRef.current = Array.from(
-                new Set([...blockedUserIdsRef.current, blockedUserId]),
-              );
-
-              // Remove this user's posts from the current feed immediately
-              setPosts((current) =>
-                current.filter((p) => p.user_id !== blockedUserId),
-              );
-              setFeedItems((current) =>
-                current.filter(
-                  (item) =>
-                    "type" in item ||
-                    ((item as Post).user_id &&
-                      (item as Post).user_id !== blockedUserId),
-                ),
-              );
+              queryClient.setQueryData<FeedQueryData>(feedKey, (prev) => {
+                if (!prev) return prev;
+                const blockedUserIds = [
+                  ...new Set([...prev.blockedUserIds, blockedUserId]),
+                ];
+                return {
+                  blockedUserIds,
+                  posts: prev.posts.filter((p) => p.user_id !== blockedUserId),
+                };
+              });
 
               setShowFlagActionModal(false);
               setShowFlagConfirmModal(false);
@@ -1085,13 +946,13 @@ export default function HomeScreen() {
   };
 
   useEffect(() => {
-    fetchPosts();
-
     // Only set up subscription if user is authenticated
     if (!profile?.id) {
       console.log("User not authenticated, skipping subscription setup");
       return;
     }
+
+    const key = feedPostsQueryKey(user?.id);
 
     // Set up real-time subscription for new posts
     let channel: ReturnType<typeof supabase.channel> | null = null;
@@ -1100,9 +961,17 @@ export default function HomeScreen() {
       // Use a unique channel name with user ID to avoid conflicts
       const channelName = `posts_changes_${profile.id}_${Date.now()}`;
 
-      channel = supabase
-        .channel(channelName)
-        .on(
+      const profileFilterIds = profileRealtimeFilterIds;
+      const profileFilter =
+        profileFilterIds.length === 0
+          ? null
+          : profileFilterIds.length === 1
+            ? `id=eq.${profileFilterIds[0]}`
+            : `id=in.(${profileFilterIds.join(",")})`;
+
+      channel = supabase.channel(channelName);
+
+      channel.on(
           "postgres_changes",
           {
             event: "INSERT",
@@ -1147,9 +1016,36 @@ export default function HomeScreen() {
             }
 
             if (newPost.user_id === currentUserId) {
-              // If it's the current user's post, refresh immediately
-              console.log("Current user's post, refreshing immediately");
-              fetchPosts();
+              console.log(
+                "Current user's post, merging into feed without full refetch",
+              );
+              void (async () => {
+                const row = await fetchFeedPostById(newPost.id);
+                if (!row) {
+                  await queryClient.invalidateQueries({ queryKey: key });
+                  setHasNewPosts(false);
+                  return;
+                }
+                queryClient.setQueryData<FeedQueryData>(key, (prev) => {
+                  const blocked =
+                    prev?.blockedUserIds ?? blockedUserIdsRef.current;
+                  if (blocked.includes(row.user_id)) {
+                    return prev ?? { posts: [], blockedUserIds: blocked };
+                  }
+                  if (prev?.posts.some((p) => p.id === row.id)) {
+                    return prev;
+                  }
+                  const nextPosts = [row, ...(prev?.posts ?? [])].slice(
+                    0,
+                    FEED_PAGE_SIZE,
+                  );
+                  return {
+                    blockedUserIds: prev?.blockedUserIds ?? blocked,
+                    posts: nextPosts,
+                  };
+                });
+                setHasNewPosts(false);
+              })();
             } else if (isActuallyNew) {
               // Only show refresh button if it's a new post from another user
               console.log("New post from another user, showing refresh button");
@@ -1158,13 +1054,16 @@ export default function HomeScreen() {
               console.log("Post is not new or already loaded, ignoring");
             }
           },
-        )
-        .on(
+        );
+
+      if (profileFilter) {
+        channel.on(
           "postgres_changes",
           {
             event: "UPDATE",
             schema: "public",
             table: "profiles",
+            filter: profileFilter,
           },
           (payload) => {
             const updatedProfile = payload.new as Tables<"profiles">;
@@ -1204,44 +1103,30 @@ export default function HomeScreen() {
                 return newMap;
               });
 
-              // Update posts in the feed if this profile is associated with any posts
-              setPosts((currentPosts) => {
-                return currentPosts.map((post) => {
-                  if (post.profiles?.id === updatedProfile.id) {
-                    return {
-                      ...post,
-                      profiles: {
-                        ...post.profiles,
-                        hype: updatedProfile.hype,
-                      },
-                    };
-                  }
-                  return post;
-                });
-              });
-
-              // Update feedItems as well
-              setFeedItems((currentItems) => {
-                return currentItems.map((item) => {
-                  if (
-                    "type" in item === false &&
-                    (item as Post).profiles?.id === updatedProfile.id
-                  ) {
-                    return {
-                      ...(item as Post),
-                      profiles: {
-                        ...(item as Post).profiles!,
-                        hype: updatedProfile.hype,
-                      },
-                    } as Post;
-                  }
-                  return item;
-                });
+              queryClient.setQueryData<FeedQueryData>(key, (prev) => {
+                if (!prev) return prev;
+                return {
+                  ...prev,
+                  posts: prev.posts.map((post) => {
+                    if (post.profiles?.id === updatedProfile.id) {
+                      return {
+                        ...post,
+                        profiles: {
+                          ...post.profiles,
+                          hype: updatedProfile.hype,
+                        },
+                      };
+                    }
+                    return post;
+                  }),
+                };
               });
             }
           },
-        )
-        .on(
+        );
+      }
+
+      channel.on(
           "postgres_changes",
           {
             event: "DELETE",
@@ -1255,16 +1140,21 @@ export default function HomeScreen() {
               userId: deletedPost.user_id,
             });
 
-            // Refetch all posts when a delete event occurs
-            // This ensures the UI updates immediately after delete all posts function is invoked
-            fetchPosts();
+            queryClient.setQueryData<FeedQueryData>(key, (prev) => {
+              if (!prev) return prev;
+              return {
+                ...prev,
+                posts: prev.posts.filter((p) => p.id !== deletedPost.id),
+              };
+            });
           },
-        )
-        .subscribe((status, err) => {
+        );
+
+      channel.subscribe((status, err) => {
           console.log("Subscription status:", status, "Channel:", channelName);
           if (status === "SUBSCRIBED") {
             console.log(
-              "Successfully subscribed to posts_changes (INSERT/DELETE) and profile_updates",
+              "Successfully subscribed to posts_changes (INSERT/DELETE) and filtered profile_updates",
             );
           } else if (status === "CHANNEL_ERROR") {
             console.error("Channel subscription error:", err);
@@ -1294,14 +1184,20 @@ export default function HomeScreen() {
         supabase.removeChannel(channel);
       }
     };
-  }, [profile?.id]);
+  }, [
+    profile?.id,
+    user?.id,
+    queryClient,
+    refreshProfile,
+    profileRealtimeFilterKey,
+  ]);
 
   const isFocused = useIsFocused();
 
-  const onRefresh = () => {
+  const onRefresh = useCallback(() => {
     console.log("[Refresh] Pull to refresh triggered");
-    fetchPosts(true);
-  };
+    void refetch().then(() => setHasNewPosts(false));
+  }, [refetch]);
 
   // When the Home tab icon is pressed:
   // 1) scroll to top (smooth)
@@ -1347,7 +1243,7 @@ export default function HomeScreen() {
 
   const firstPostIndex = feedItems.findIndex((i) => !("type" in i));
 
-  if (loading && posts.length === 0) {
+  if (isPending && basePosts.length === 0) {
     return (
       <Container>
         <View className="flex-1 items-center justify-center">

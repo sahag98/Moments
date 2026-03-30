@@ -36,7 +36,6 @@ interface AuthContextType {
   error: AuthError | null;
   refreshProfile: (options?: { replaceToTabs?: boolean }) => Promise<void>;
   refreshWelcomeStatus: () => Promise<void>;
-  fetchAllProfiles: () => Promise<Profile[]>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -64,7 +63,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       const { data, error: profileError } = await supabase
         .from("profiles")
-        .select("*")
+        .select(
+          "id, username, full_name, avatar_url, eula_accepted_at, expo_token, streak, hype, updated_at",
+        )
         .eq("id", userId)
         .maybeSingle(); // Use maybeSingle() instead of single() - returns null instead of error when no rows found
 
@@ -463,22 +464,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const fetchAllProfiles = async (): Promise<Profile[]> => {
-    try {
-      const { data, error } = await supabase.from("profiles").select("*");
-
-      if (error) {
-        console.error("Error fetching all profiles:", error);
-        return [];
-      }
-
-      return data || [];
-    } catch (error) {
-      console.error("Error fetching all profiles:", error);
-      return [];
-    }
-  };
-
   const signOut = async () => {
     try {
       setError(null);
@@ -579,7 +564,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         error,
         refreshProfile,
         refreshWelcomeStatus,
-        fetchAllProfiles,
       }}
     >
       {children}

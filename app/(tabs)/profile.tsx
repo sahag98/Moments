@@ -8,6 +8,7 @@ import { Image as ExpoImage } from "expo-image";
 import * as ImagePicker from "expo-image-picker";
 import * as MediaLibrary from "expo-media-library";
 import { router } from "expo-router";
+import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import {
   Alert,
@@ -25,6 +26,11 @@ import {
 import { Container } from "@/components/Container";
 import { ImageEditorModal } from "@/components/ImageEditorModal";
 import { useAuth } from "@/contexts/AuthContext";
+import {
+  fetchProfileWeekPosts,
+  profileWeekPostsQueryKey,
+  ProfileGridPost,
+} from "@/lib/queries/profilePosts";
 import { supabase } from "@/lib/supabase";
 import { getStorageUrl } from "@/lib/utils";
 import { useHypeStore } from "@/store/hypeStore";
@@ -38,12 +44,6 @@ const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get("window");
 const PADDING = 16;
 const GAP = 16;
 const GRID_ITEM_SIZE = (SCREEN_WIDTH - PADDING * 2 - GAP) / 2; // 2 columns with padding and gap
-
-interface Post {
-  id: number;
-  image: string;
-  created_at: string;
-}
 
 export default function ProfileScreen() {
   const {
@@ -65,8 +65,11 @@ export default function ProfileScreen() {
   const [uploading, setUploading] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [deleting, setDeleting] = useState(false);
-  const [userPosts, setUserPosts] = useState<Post[]>([]);
-  const [loadingPosts, setLoadingPosts] = useState(false);
+  const { data: userPosts = [], isPending: loadingPosts } = useQuery({
+    queryKey: profileWeekPostsQueryKey(user?.id),
+    queryFn: () => fetchProfileWeekPosts(user!.id),
+    enabled: Boolean(user?.id && currentProfile?.id),
+  });
   const [showSaveModal, setShowSaveModal] = useState(false);
   const [selectedPostImage, setSelectedPostImage] = useState<string | null>(
     null,
@@ -138,38 +141,6 @@ export default function ProfileScreen() {
 
   const { top, bottom } = useSafeAreaInsets();
 
-  // Fetch user's posts from the past week
-  const fetchUserPosts = async () => {
-    if (!currentProfile?.id || !user?.id) return;
-
-    try {
-      setLoadingPosts(true);
-      const oneWeekAgo = new Date();
-      oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
-      const oneWeekAgoISO = oneWeekAgo.toISOString();
-
-      const { data, error } = await supabase
-        .from("posts")
-        .select("id, image, created_at")
-        .eq("user_id", user.id)
-        .gte("created_at", oneWeekAgoISO)
-        .order("created_at", { ascending: false });
-
-      if (error) {
-        console.error("Error fetching user posts:", error);
-        return;
-      }
-
-      if (data) {
-        setUserPosts(data as Post[]);
-      }
-    } catch (error) {
-      console.error("Error fetching user posts:", error);
-    } finally {
-      setLoadingPosts(false);
-    }
-  };
-
   // // Fetch profile if user exists but profile is missing
   // useEffect(() => {
   //   if (user?.id && !currentProfile) {
@@ -192,11 +163,6 @@ export default function ProfileScreen() {
     syncStreakWithSupabase,
     syncHypeWithSupabase,
   ]);
-
-  // Fetch user posts when component mounts or user changes
-  useEffect(() => {
-    fetchUserPosts();
-  }, [currentProfile?.id]);
 
   // Set up realtime subscription for profile updates (hype, streak, etc.)
   useEffect(() => {
@@ -598,7 +564,7 @@ export default function ProfileScreen() {
     }
   };
 
-  const renderPostItem = ({ item }: { item: (typeof userPosts)[0] }) => (
+  const renderPostItem = ({ item }: { item: ProfileGridPost }) => (
     <View
       style={{
         width: GRID_ITEM_SIZE,

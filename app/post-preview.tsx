@@ -1,6 +1,7 @@
 import { Container } from "@/components/Container";
 import { useAuth } from "@/contexts/AuthContext";
 import { CheckReview } from "@/hooks/useShowReview";
+import { profileWeekPostsQueryKey } from "@/lib/queries/profilePosts";
 import { supabase } from "@/lib/supabase";
 import { useImageStore } from "@/store/imageStore";
 import { usePostStore } from "@/store/postStore";
@@ -17,6 +18,7 @@ import {
   useImage,
 } from "@shopify/react-native-skia";
 import * as Haptics from "expo-haptics";
+import { useQueryClient } from "@tanstack/react-query";
 import { router } from "expo-router";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -44,8 +46,9 @@ const cinematicMatrix = [
 ];
 
 export default function PostPreviewScreen() {
+  const queryClient = useQueryClient();
   const { capturedImageUri, clearCapturedImageUri } = useImageStore();
-  const { user, profile, fetchAllProfiles, refreshProfile } = useAuth();
+  const { user, refreshProfile } = useAuth();
   const { addPost } = useStreakStore();
 
   const {
@@ -310,6 +313,10 @@ half4 main(float2 xy) {
         return;
       }
 
+      void queryClient.invalidateQueries({
+        queryKey: profileWeekPostsQueryKey(user.id),
+      });
+
       // Record that user posted today (only after successful database insert)
       await recordPost();
 
@@ -336,63 +343,17 @@ half4 main(float2 xy) {
       // Show encouraging message
       setPostingMessage("Your moment is being shared...");
 
-      // Send notifications to all users
-      try {
-        const allProfiles = await fetchAllProfiles();
-        const profilesWithTokens = allProfiles.filter(
-          (p) => p.expo_token && p.id !== user.id,
-        );
-
-        const displayName =
-          profile?.username || profile?.full_name || "Someone";
-
-        // Send notifications to all users with expo tokens
-        const notificationPromises = profilesWithTokens.map(async (p) => {
-          if (!p.expo_token) return;
-
-          const message = {
-            to: p.expo_token,
-            sound: "default",
-            title: "Moments",
-            body: `${displayName} posted a new moment!`,
-            data: {
-              route: "/(tabs)",
-            },
-          };
-
-          try {
-            const response = await fetch(
-              "https://exp.host/--/api/v2/push/send",
-              {
-                method: "POST",
-                headers: {
-                  Accept: "application/json",
-                  "Accept-encoding": "gzip, deflate",
-                  "Content-Type": "application/json",
-                },
-                body: JSON.stringify(message),
-              },
-            );
-
-            if (!response.ok) {
-              console.error(
-                `Failed to send notification to ${p.id}:`,
-                response.statusText,
-              );
-            }
-          } catch (error) {
-            console.error(`Error sending notification to ${p.id}:`, error);
+      // Fan out push via Edge Function (no large profiles download on device)
+      void supabase.functions
+        .invoke("notify-new-post", { body: {} })
+        .then(({ error: notifyError }) => {
+          if (notifyError) {
+            console.error("notify-new-post:", notifyError);
           }
+        })
+        .catch((err) => {
+          console.error("notify-new-post invoke failed:", err);
         });
-
-        // Send all notifications in parallel (don't wait for them)
-        Promise.all(notificationPromises).catch((error) => {
-          console.error("Error sending notifications:", error);
-        });
-      } catch (error) {
-        console.error("Error fetching profiles for notifications:", error);
-        // Don't block the post flow if notifications fail
-      }
 
       // Clear the image from store
 

@@ -1,4 +1,8 @@
-// @ts-nocheck
+import {
+  APP_VERSION_QUERY_KEY,
+  fetchAppVersionNum,
+} from "@/lib/queries/appVersion";
+import { useQuery } from "@tanstack/react-query";
 import { nativeApplicationVersion } from "expo-application";
 import React from "react";
 import {
@@ -10,43 +14,33 @@ import {
   View,
 } from "react-native";
 
-import { supabase } from "@/lib/supabase";
+const VERSION_STALE_MS = 24 * 60 * 60 * 1000;
 
 export const UpdateModal = () => {
-  const [hasUpdate, setHasUpdate] = React.useState(false);
+  const [dismissed, setDismissed] = React.useState(false);
 
-  async function fetchUpdate() {
-    console.log("fetchUpdate");
-    try {
-      const { data: update } = await supabase.from("version").select("num");
+  const { data: serverVersion } = useQuery({
+    queryKey: APP_VERSION_QUERY_KEY,
+    queryFn: fetchAppVersionNum,
+    staleTime: VERSION_STALE_MS,
+    gcTime: 48 * 60 * 60 * 1000,
+  });
 
-      if (!update.length) {
-        return;
-      }
+  const versionMismatch =
+    serverVersion != null &&
+    serverVersion !== nativeApplicationVersion.toString();
 
-      if (update[0].num !== nativeApplicationVersion.toString()) {
-        setHasUpdate(true);
-      } else {
-        setHasUpdate(false);
-      }
-    } catch (error) {
-      console.log("fetchUpdate", error);
-    }
-  }
-
-  React.useEffect(() => {
-    fetchUpdate();
-  }, []);
+  const visible = versionMismatch && !dismissed;
 
   const handleCloseModal = () => {
-    setHasUpdate(false);
+    setDismissed(true);
   };
 
   return (
     <Modal
       animationType="fade"
       transparent
-      visible={hasUpdate}
+      visible={visible}
       onRequestClose={handleCloseModal}
       statusBarTranslucent
     >
@@ -69,12 +63,12 @@ export const UpdateModal = () => {
               onPress={() => {
                 if (Platform.OS === "android") {
                   Linking.openURL(
-                    "https://play.google.com/store/apps/details?id=com.sahag98.prayerListApp"
+                    "https://play.google.com/store/apps/details?id=com.sahag98.moments&pcampaignid=web_share",
                   );
                 }
                 if (Platform.OS === "ios") {
                   Linking.openURL(
-                    "https://apps.apple.com/us/app/prayse-prayer-journal/id6443480347"
+                    "https://apps.apple.com/us/app/capture-moments/id6755897645",
                   );
                 }
               }}
