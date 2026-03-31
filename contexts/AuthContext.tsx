@@ -64,7 +64,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const { data, error: profileError } = await supabase
         .from("profiles")
         .select(
-          "id, username, full_name, avatar_url, eula_accepted_at, expo_token, streak, hype, updated_at",
+          "id, username, full_name, bio, avatar_url, eula_accepted_at, expo_token, streak, hype, updated_at",
         )
         .eq("id", userId)
         .maybeSingle(); // Use maybeSingle() instead of single() - returns null instead of error when no rows found

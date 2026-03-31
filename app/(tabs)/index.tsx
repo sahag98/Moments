@@ -1,6 +1,7 @@
 import { Container } from "@/components/Container";
 import { DailyHypeLimitModal } from "@/components/DailyHypeLimitModal";
 import { HelloWave } from "@/components/hello-wave";
+import { NewUpdateAvailableCard } from "@/components/NewUpdateAvailableCard";
 import { SneakPeekUpdateCard } from "@/components/SneakPeekUpdateCard";
 import { UpdateModal } from "@/components/update-modal";
 import { useAuth } from "@/contexts/AuthContext";
@@ -1278,6 +1279,7 @@ export default function HomeScreen() {
           </TouchableOpacity>
         </View>
 
+        <NewUpdateAvailableCard />
         <SneakPeekUpdateCard />
 
         {/* Refresh Button - shown when new posts are available */}

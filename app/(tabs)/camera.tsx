@@ -55,44 +55,6 @@ VolumeManager.showNativeVolumeUI({ enabled: false });
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get("window");
 
-// Find Ultra Wide lens from available lenses
-const findUltraWideLens = (lenses: string[]): string | undefined => {
-  // Common identifiers for Ultra Wide lens
-  // Matches: "Back Ultra Wide Camera", "builtInUltraWideCamera", etc.
-  return lenses.find(
-    (lens) =>
-      lens.toLowerCase().includes("back ultra wide camera") ||
-      lens.toLowerCase().includes("ultrawide") ||
-      lens === "builtInUltraWideCamera",
-  );
-};
-
-// Find default/main camera lens (for 1x)
-const findDefaultLens = (lenses: string[]): string | undefined => {
-  if (!lenses || lenses.length === 0) return undefined;
-
-  // Look for "Back Camera" (the main/default camera) - exact match first
-  const backCamera = lenses.find((lens) => lens === "Back Camera");
-  if (backCamera) return backCamera;
-
-  // Fallback: look for any lens that is just "Back Camera" (case insensitive)
-  const backCameraCaseInsensitive = lenses.find(
-    (lens) => lens.toLowerCase() === "back camera",
-  );
-  if (backCameraCaseInsensitive) return backCameraCaseInsensitive;
-
-  // Last resort: look for any back camera that isn't ultra wide, telephoto, lidar, or dual
-  return lenses.find(
-    (lens) =>
-      lens.toLowerCase().includes("back") &&
-      !lens.toLowerCase().includes("ultra wide") &&
-      !lens.toLowerCase().includes("telephoto") &&
-      !lens.toLowerCase().includes("lidar") &&
-      lens.toLowerCase() !== "back dual camera" &&
-      !lens.toLowerCase().includes("dual wide"),
-  );
-};
-
 export default function CameraScreen() {
   const navigation = useNavigation();
   const [permission, requestPermission] = useCameraPermissions();
@@ -100,14 +62,16 @@ export default function CameraScreen() {
   const [isSaving, setIsSaving] = useState(false);
   // Zoom level: "0.5x", "1x", or "3x" (for UI display)
   const [zoomLevel, setZoomLevel] = useState<"0.5x" | "1x" | "3x">("0.5x");
-  const [availableLenses, setAvailableLenses] = useState<string[]>([]);
   const [isCameraReady, setIsCameraReady] = useState(false);
-  const [selectedLens, setSelectedLens] = useState<string | undefined>(
-    undefined,
-  );
   const { checkIfCanPost } = usePostStore();
   const [facing, setFacing] = useState<"front" | "back">("back");
   const [flashMode, setFlashMode] = useState<"on" | "off" | "auto">("off");
+  const [autoFocus, setAutoFocus] = useState<"on" | "off">("on");
+  const [focusIndicator, setFocusIndicator] = useState<{
+    x: number;
+    y: number;
+    id: number;
+  } | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [processingMessage, setProcessingMessage] = useState("");
   const cameraRef = useRef<CameraView>(null);
@@ -126,19 +90,6 @@ export default function CameraScreen() {
   useEffect(() => {
     currentZoomRef.current = currentZoom;
   }, [currentZoom]);
-
-  useEffect(() => {
-    if (!isCameraReady) return;
-
-    const volumeListener = VolumeManager.addVolumeListener((result) => {
-      console.log("volume changed", result);
-      takePicture();
-    });
-
-    return () => {
-      volumeListener.remove();
-    };
-  }, [isCameraReady]);
 
   // Clear captured image when screen comes into focus (e.g., returning from modal)
   useFocusEffect(
@@ -224,7 +175,7 @@ half4 main(float2 xy) {
 
   const { setCapturedImageUri: setImageStoreUri } = useImageStore();
 
-  const takePicture = async () => {
+  const takePicture = useCallback(async () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
     const canPost = await checkIfCanPost();
@@ -280,91 +231,39 @@ half4 main(float2 xy) {
         setIsProcessing(false);
       }
     }
-  };
+  }, [checkIfCanPost, setImageStoreUri]);
+
+  useEffect(() => {
+    if (!isCameraReady) return;
+
+    const volumeListener = VolumeManager.addVolumeListener((result) => {
+      console.log("volume changed", result);
+      takePicture();
+    });
+
+    return () => {
+      volumeListener.remove();
+    };
+  }, [isCameraReady, takePicture]);
 
   const retakePicture = () => {
     setCapturedImageUri(null);
   };
 
   // Convert zoom level label to CameraView zoom value (0-1)
-  // Note: expo-camera zoom prop is 0-1 where 0 = no zoom, 1 = max zoom
-  // Ultra-wide (0.5x) can't be achieved with zoom prop alone as it requires switching camera lenses
-  // We'll use 0 for both 0.5x and 1x since zoom can't go below 0
+  // Note: expo-camera zoom prop is 0-1 where 0 = no zoom, 1 = max zoom.
   const getZoomValue = (level: "0.5x" | "1x" | "3x"): number => {
     switch (level) {
       case "0.5x":
-        return 0; // Ultra-wide - requires device support (zoom can't go negative)
+        return 0;
       case "1x":
-        return 0; // Regular/no zoom (default)
+        return 0;
       case "3x":
-        return 0.2; // High zoom
+        return 0.2;
       default:
         return 0;
     }
   };
-
-  // Helper function to select the appropriate lens based on zoom level
-  // Returns the lens ID immediately for synchronous use
-  const selectLensForZoomLevel = useCallback(
-    (lenses: string[], level: "0.5x" | "1x" | "3x"): string | undefined => {
-      if (lenses.length === 0) return undefined;
-
-      let lensToSelect: string | undefined = undefined;
-
-      if (level === "0.5x") {
-        // Use ultra wide lens for 0.5x
-        const ultraWideLens = findUltraWideLens(lenses);
-        if (ultraWideLens) {
-          lensToSelect = ultraWideLens;
-        } else {
-          // Fallback: try to find any lens that might be ultra wide
-          const fallbackLens = lenses.find(
-            (lens) =>
-              lens.toLowerCase().includes("wide") &&
-              !lens.toLowerCase().includes("telephoto"),
-          );
-          if (fallbackLens) {
-            lensToSelect = fallbackLens;
-          }
-        }
-      } else {
-        // For 1x and 3x, use default camera lens
-        const defaultLens = findDefaultLens(lenses);
-        lensToSelect = defaultLens;
-      }
-
-      // Set the lens immediately
-      setSelectedLens(lensToSelect);
-      return lensToSelect;
-    },
-    [],
-  );
-
-  // Handle available lenses change - set lens immediately for fast initialization
-  const handleAvailableLensesChanged = useCallback(
-    (event: { lenses: string[] }) => {
-      const { lenses } = event;
-
-      // Set available lenses immediately
-      setAvailableLenses(lenses);
-
-      // Immediately set the lens based on current zoom level for fast initialization
-      // Only do this on first initialization to avoid overriding user selections
-      if (lenses.length > 0 && !lensInitializedRef.current) {
-        lensInitializedRef.current = true;
-        // Select lens synchronously - this will update state immediately
-        selectLensForZoomLevel(lenses, zoomLevel);
-      }
-    },
-    [zoomLevel, selectLensForZoomLevel],
-  );
-
-  // // Update selected lens when zoom level changes (but only if lenses are already available and initialized)
-  // useEffect(() => {
-  //   if (availableLenses.length > 0 && lensInitializedRef.current) {
-  //     selectLensForZoomLevel(availableLenses, zoomLevel);
-  //   }
-  // }, [zoomLevel, availableLenses, selectLensForZoomLevel]);
 
   const handleZoomLevelChange = (level: "0.5x" | "1x" | "3x") => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -380,15 +279,23 @@ half4 main(float2 xy) {
     // Update reanimated values immediately (these are synchronous)
     zoom.value = zoomValue;
     savedZoom.value = zoomValue;
-
-    // Immediately update lens - this must happen after availableLenses is set
-    // Use the helper function which sets state immediately
-    if (availableLenses.length > 0) {
-      selectLensForZoomLevel(availableLenses, level);
-    }
   };
 
-  const flipCamera = () => {
+  const triggerAutoFocus = useCallback((x?: number, y?: number) => {
+    // expo-camera CameraView doesn't expose focus-at-point; we can only nudge autofocus.
+    const id = Date.now();
+    if (typeof x === "number" && typeof y === "number") {
+      setFocusIndicator({ x, y, id });
+      setTimeout(() => {
+        setFocusIndicator((prev) => (prev?.id === id ? null : prev));
+      }, 900);
+    }
+
+    setAutoFocus("off");
+    setTimeout(() => setAutoFocus("on"), 60);
+  }, []);
+
+  const flipCamera = useCallback(() => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setFacing((prev) => {
       const newFacing = prev === "back" ? "front" : "back";
@@ -402,10 +309,11 @@ half4 main(float2 xy) {
     setCurrentZoom(0);
     zoom.value = 0;
     savedZoom.value = 0;
-    // Reset lens selection when flipping - allow re-initialization for new camera
-    setSelectedLens(undefined);
+    // Nudge autofocus after switching
+    triggerAutoFocus();
+    // Allow re-init after flip
     lensInitializedRef.current = false;
-  };
+  }, [savedZoom, triggerAutoFocus, zoom]);
 
   const toggleFlash = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -463,6 +371,32 @@ half4 main(float2 xy) {
         // No need for additional animation here
       });
   }, []);
+
+  const doubleTapToFlipGesture = useMemo(() => {
+    return Gesture.Tap()
+      .numberOfTaps(2)
+      .maxDelay(250)
+      .onEnd(() => {
+        "worklet";
+        runOnJS(flipCamera)();
+      });
+  }, [flipCamera]);
+
+  const singleTapToFocusGesture = useMemo(() => {
+    return Gesture.Tap()
+      .numberOfTaps(1)
+      .maxDelay(250)
+      .onEnd((event: { x: number; y: number }) => {
+        "worklet";
+        runOnJS(triggerAutoFocus)(event.x, event.y);
+      });
+  }, [triggerAutoFocus]);
+
+  const cameraGestures = useMemo(() => {
+    // Exclusive makes sure a double-tap doesn't also fire a single-tap.
+    const taps = Gesture.Exclusive(doubleTapToFlipGesture, singleTapToFocusGesture);
+    return Gesture.Simultaneous(pinchGesture, taps);
+  }, [doubleTapToFlipGesture, pinchGesture, singleTapToFocusGesture]);
 
   const saveImageToGallery = async () => {
     if (!canvasRef.current || !image) {
@@ -523,7 +457,7 @@ half4 main(float2 xy) {
     return <View className="flex-1 bg-black" />;
   }
 
-  // Only show custom UI when user has already denied (canAskAgain is false). Otherwise show camera and system dialog will appear.
+  // Only show custom UI when user has already denied (canAskAgain is false).
   if (!permission.granted && !permission.canAskAgain) {
     return (
       <View className="flex-1 bg-background justify-center items-center">
@@ -559,7 +493,7 @@ half4 main(float2 xy) {
   if (!capturedImageUri) {
     return (
       <GestureHandlerRootView style={{ flex: 1 }}>
-        <GestureDetector gesture={pinchGesture}>
+        <GestureDetector gesture={cameraGestures}>
           <View className="flex-1" collapsable={false}>
             <View className="flex-1 mx-0 bg rounded-3xl overflow-hidden">
               {/* Back button */}
@@ -586,12 +520,27 @@ half4 main(float2 xy) {
                   zoom={currentZoom}
                   mirror={facing === "front"}
                   flash={flashMode}
-                  selectedLens={selectedLens}
-                  onAvailableLensesChanged={handleAvailableLensesChanged}
+                  autofocus={autoFocus}
                   onCameraReady={() => setIsCameraReady(true)}
                 />
               ) : (
                 <View style={{ flex: 1, backgroundColor: "black" }} />
+              )}
+              {focusIndicator && (
+                <View
+                  pointerEvents="none"
+                  style={{
+                    position: "absolute",
+                    left: focusIndicator.x - 28,
+                    top: focusIndicator.y - 28,
+                    width: 56,
+                    height: 56,
+                    borderRadius: 8,
+                    borderWidth: 2,
+                    borderColor: "rgba(255,255,255,0.9)",
+                    backgroundColor: "transparent",
+                  }}
+                />
               )}
               {/* Fading bottom border */}
               <View

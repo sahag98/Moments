@@ -88,6 +88,7 @@ export type Database = {
       profiles: {
         Row: {
           avatar_url: string | null
+          bio: string | null
           eula_accepted_at: string | null
           expo_token: string | null
           full_name: string | null
@@ -99,6 +100,7 @@ export type Database = {
         }
         Insert: {
           avatar_url?: string | null
+          bio?: string | null
           eula_accepted_at?: string | null
           expo_token?: string | null
           full_name?: string | null
@@ -110,6 +112,7 @@ export type Database = {
         }
         Update: {
           avatar_url?: string | null
+          bio?: string | null
           eula_accepted_at?: string | null
           expo_token?: string | null
           full_name?: string | null

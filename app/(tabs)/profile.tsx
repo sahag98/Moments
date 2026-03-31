@@ -1,6 +1,7 @@
 import Feather from "@expo/vector-icons/Feather";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { Skia, useCanvasRef } from "@shopify/react-native-skia";
+import { useQuery } from "@tanstack/react-query";
 import * as Application from "expo-application";
 import * as FileSystem from "expo-file-system/legacy";
 import * as Haptics from "expo-haptics";
@@ -8,7 +9,6 @@ import { Image as ExpoImage } from "expo-image";
 import * as ImagePicker from "expo-image-picker";
 import * as MediaLibrary from "expo-media-library";
 import { router } from "expo-router";
-import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import {
   Alert,
@@ -28,8 +28,8 @@ import { ImageEditorModal } from "@/components/ImageEditorModal";
 import { useAuth } from "@/contexts/AuthContext";
 import {
   fetchProfileWeekPosts,
-  profileWeekPostsQueryKey,
   ProfileGridPost,
+  profileWeekPostsQueryKey,
 } from "@/lib/queries/profilePosts";
 import { supabase } from "@/lib/supabase";
 import { getStorageUrl } from "@/lib/utils";
@@ -79,6 +79,9 @@ export default function ProfileScreen() {
   const [showEditNameModal, setShowEditNameModal] = useState(false);
   const [editingName, setEditingName] = useState("");
   const [updatingName, setUpdatingName] = useState(false);
+  const [showEditBioModal, setShowEditBioModal] = useState(false);
+  const [editingBio, setEditingBio] = useState("");
+  const [updatingBio, setUpdatingBio] = useState(false);
   const [showBoostedModal, setShowBoostedModal] = useState(false);
   const canvasRef = useCanvasRef();
   const pixelDensity = PixelRatio.get();
@@ -564,6 +567,48 @@ export default function ProfileScreen() {
     }
   };
 
+  const handleEditBio = () => {
+    setEditingBio(currentProfile?.bio || "");
+    setShowEditBioModal(true);
+  };
+
+  const handleSaveBio = async () => {
+    if (!user?.id) {
+      Alert.alert("Error", "User not found");
+      return;
+    }
+
+    const trimmedBio = editingBio.trim();
+
+    try {
+      setUpdatingBio(true);
+
+      const { error: updateError } = await supabase
+        .from("profiles")
+        .update({
+          bio: trimmedBio.length > 0 ? trimmedBio : null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", user.id);
+
+      if (updateError) {
+        console.error("Error updating bio:", updateError);
+        throw updateError;
+      }
+
+      await refreshProfile({ replaceToTabs: false });
+
+      setShowEditBioModal(false);
+      setEditingBio("");
+      Alert.alert("Success", "Bio updated!");
+    } catch (error) {
+      console.error("Error updating bio:", error);
+      Alert.alert("Error", "Failed to update bio");
+    } finally {
+      setUpdatingBio(false);
+    }
+  };
+
   const renderPostItem = ({ item }: { item: ProfileGridPost }) => (
     <View
       style={{
@@ -617,7 +662,7 @@ export default function ProfileScreen() {
   );
 
   const ListHeaderComponent = () => (
-    <View className="items-center mt-8 mb-6">
+    <View className="items-center mt-8 mb-4">
       <TouchableOpacity
         onPress={pickImage}
         onLongPress={() => {
@@ -670,59 +715,51 @@ export default function ProfileScreen() {
       {uploading && (
         <Text className="text-gray-400 text-sm mt-2">Uploading...</Text>
       )}
-      <View className="w-full gap-2">
-        <View className="w-full flex-row items-center justify-center gap-2 mt-4">
-          <Text className="text-white text-3xl font-bold">{displayName}</Text>
-          <TouchableOpacity
-            onPress={handleEditName}
-            className="p-1"
-            activeOpacity={0.7}
+      <View className="w-full  flex-row items-center justify-between gap-2 my-6">
+        <View className="flex-1 gap-2">
+          <View className="w-full flex-row gap-0 mt-0">
+            <Text className="text-white text-3xl font-bold">{displayName}</Text>
+            <TouchableOpacity
+              onPress={handleEditName}
+              className="p-1"
+              activeOpacity={0.7}
+            >
+              <Feather name="edit" size={20} color="white" />
+            </TouchableOpacity>
+          </View>
+          {/* <TouchableOpacity
+            onPress={handleEditBio}
+            className="w-full flex-row items-center gap-0"
           >
-            <Feather name="edit" size={20} color="white" />
-          </TouchableOpacity>
+            <View className="p-0">
+              <MaterialIcons name="edit" size={18} color="#acacac" />
+            </View>
+            <Text className="text-[#acacac]">
+              {currentProfile?.bio?.trim()
+                ? currentProfile.bio
+                : "Drop a line that sums you up..."}
+            </Text>
+          </TouchableOpacity> */}
         </View>
-        {/* <View className="w-full  flex-row items-center gap-0">
-          <TouchableOpacity
-            onPress={handleEditName}
-            className="p-1"
-            activeOpacity={0.7}
-          >
-            <MaterialIcons name="edit" size={18} color="#acacac" />
-          </TouchableOpacity>
-          <Text className="text-[#acacac] text-sm">
-            Drop a line that sums you up...
-          </Text>
-        </View> */}
-      </View>
-      <View className="flex-row gap-3 mt-0">
-        {/* {profile?.streak !== undefined && profile.streak > 0 && (
-          <View className="flex-row bg-secondary px-4 py-2 border border-white/10 rounded-full items-center">
-            <Ionicons name="flame" size={20} color="#0052c8" />
-            <Text className="text-white text-lg font-semibold ml-2">
-              {profile.streak}
+        <TouchableOpacity
+          activeOpacity={0.8}
+          onPress={() => {
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+            setShowBoostedModal(true);
+          }}
+        >
+          <View className="flex bg-secondary size-20 border border-white/10 rounded-xl items-center gap-2 justify-center">
+            <Text className="text-white text-2xl font-semibold">📸</Text>
+            <Text className="text-white text-2xl font-semibold">
+              {currentProfile?.hype ?? 0}
             </Text>
           </View>
-        )} */}
-        {/* {profile?.hype !== undefined && profile.hype > 0 && ( */}
-        <View className="flex-row items-center w-full justify-between">
-          <Text className="text-white text-xl font-semibold">Your moments</Text>
-          <TouchableOpacity
-            activeOpacity={0.8}
-            onPress={() => {
-              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-              setShowBoostedModal(true);
-            }}
-          >
-            <View className="flex-row bg-secondary px-4 py-2 border border-white/10 rounded-full items-center gap-2 justify-center">
-              <Text className="text-white text-3xl font-semibold">📸</Text>
-              <Text className="text-white text-lg pt-1 font-semibold">
-                {currentProfile?.hype ?? 0}
-              </Text>
-            </View>
-          </TouchableOpacity>
-        </View>
-        {/* )} */}
+        </TouchableOpacity>
       </View>
+
+      <Text className="text-white text-xl self-start font-semibold">
+        Your moments
+      </Text>
     </View>
   );
 
@@ -1003,6 +1040,63 @@ export default function ProfileScreen() {
                   setEditingName("");
                 }}
                 disabled={updatingName}
+                className="bg-background p-4 rounded-lg items-center"
+                activeOpacity={0.7}
+              >
+                <Text className="text-white font-semibold">Cancel</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={showEditBioModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          setShowEditBioModal(false);
+          setEditingBio("");
+        }}
+      >
+        <View className="flex-1 bg-black/70 items-center justify-center p-6">
+          <View className="bg-secondary items-center justify-center rounded-2xl p-6 w-full max-w-sm">
+            <Text className="text-white text-2xl font-bold mb-2">Edit Bio</Text>
+            <TextInput
+              value={editingBio}
+              onChangeText={setEditingBio}
+              placeholder="Drop a line that sums you up..."
+              placeholderTextColor="#8a8a8a"
+              selectionColor={"white"}
+              className="bg-background text-white p-4 rounded-lg border border-white/20 w-full mt-4 mb-6"
+              autoCapitalize="sentences"
+              autoCorrect
+              autoFocus
+              multiline
+              maxLength={160}
+              textAlignVertical="top"
+            />
+            <View className="w-full gap-3">
+              <TouchableOpacity
+                onPress={handleSaveBio}
+                disabled={updatingBio}
+                className={`bg-primary p-4 rounded-lg items-center ${
+                  updatingBio ? "opacity-50" : ""
+                }`}
+                activeOpacity={0.7}
+              >
+                {updatingBio ? (
+                  <Text className="text-white font-semibold">Updating...</Text>
+                ) : (
+                  <Text className="text-white font-semibold">Save</Text>
+                )}
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => {
+                  setShowEditBioModal(false);
+                  setEditingBio("");
+                }}
+                disabled={updatingBio}
                 className="bg-background p-4 rounded-lg items-center"
                 activeOpacity={0.7}
               >
