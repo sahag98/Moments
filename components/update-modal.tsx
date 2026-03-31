@@ -69,12 +69,12 @@ export const UpdateModal = () => {
               onPress={() => {
                 if (Platform.OS === "android") {
                   Linking.openURL(
-                    "https://play.google.com/store/apps/details?id=com.sahag98.prayerListApp"
+                    "https://play.google.com/store/apps/details?id=com.sahag98.moments&pcampaignid=web_share",
                   );
                 }
                 if (Platform.OS === "ios") {
                   Linking.openURL(
-                    "https://apps.apple.com/us/app/prayse-prayer-journal/id6443480347"
+                    "https://apps.apple.com/us/app/capture-moments/id6755897645",
                   );
                 }
               }}
